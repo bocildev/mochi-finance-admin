@@ -18,29 +18,33 @@ class AdminDashboardController extends Controller
         }
 
         try {
-            $pdo = new \PDO('mysql:host=127.0.0.1;port=3306;dbname=iam_sso_core', 'root', '');
+            $iamHost = env('IAM_DB_HOST', config('database.connections.mysql.host', '127.0.0.1'));
+            $iamPort = env('IAM_DB_PORT', config('database.connections.mysql.port', '3306'));
+            $iamDb = env('IAM_DB_DATABASE', 'iam_sso_core');
+            $iamUser = env('IAM_DB_USERNAME', config('database.connections.mysql.username', 'root'));
+            $iamPass = env('IAM_DB_PASSWORD', config('database.connections.mysql.password', ''));
+
+            $pdo = new \PDO("mysql:host={$iamHost};port={$iamPort};dbname={$iamDb}", $iamUser, $iamPass);
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
-            $appStmt = $pdo->prepare('SELECT id FROM applications WHERE client_id = :cid LIMIT 1');
-            $appStmt->execute(['cid' => $this->sso->clientId()]);
-            $appId = $appStmt->fetchColumn();
-            if (! $appId) {
+            $appStmt = $pdo->query("SELECT id FROM applications WHERE client_id IN ('app_mochi_finance_admin', 'app_mochi_finance')");
+            $appIds = $appStmt ? $appStmt->fetchAll(\PDO::FETCH_COLUMN) : [];
+            if (empty($appIds)) {
                 return;
             }
 
-            $sql = '
+            $inIds = implode(',', array_map('intval', $appIds));
+            $sql = "
                 SELECT u.sub, u.name, u.email, u.status, u.is_super_admin, u.created_at,
                        GROUP_CONCAT(r.`key`) AS role_keys
                 FROM users u
-                LEFT JOIN user_applications ua ON ua.user_id = u.id AND ua.application_id = :app_id1
+                LEFT JOIN user_applications ua ON ua.user_id = u.id AND ua.application_id IN ({$inIds})
                 LEFT JOIN user_roles ur ON ur.user_id = u.id
-                LEFT JOIN roles r ON r.id = ur.role_id AND r.application_id = :app_id2
+                LEFT JOIN roles r ON r.id = ur.role_id AND r.application_id IN ({$inIds})
                 WHERE ua.application_id IS NOT NULL OR r.id IS NOT NULL OR u.is_super_admin = 1
                 GROUP BY u.id, u.sub, u.name, u.email, u.status, u.is_super_admin, u.created_at
-            ';
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['app_id1' => $appId, 'app_id2' => $appId]);
-            $rows = $stmt->fetchAll(\PDO::FETCH_OBJ);
+            ";
+            $rows = $pdo->query($sql)->fetchAll(\PDO::FETCH_OBJ);
 
             foreach ($rows as $row) {
                 $existing = DB::table('finance_users')->where('sub', $row->sub)->first();
