@@ -53,6 +53,14 @@ class CloudSyncController extends Controller
                     ->latest('id')
                     ->first();
 
+                $now = Carbon::now();
+                $trialDays = 14;
+                $createdAt = $userRow->created_at ? Carbon::parse($userRow->created_at) : $now;
+                $trialExpiresAt = $createdAt->copy()->addDays($trialDays);
+                $isFree = ($userRow->plan_tier ?? 'free') === 'free';
+                $isTrialExpired = $isFree && $now->greaterThan($trialExpiresAt);
+                $trialDaysRemaining = $isFree ? max(0, (int) ceil($now->floatDiffInDays($trialExpiresAt, false))) : 0;
+
                 $account = [
                     'sub' => $userRow->sub,
                     'name' => $userRow->name,
@@ -60,6 +68,9 @@ class CloudSyncController extends Controller
                     'tier' => $userRow->plan_tier ?? 'free',
                     'billingCycle' => $userRow->billing_cycle,
                     'proExpiresAt' => $userRow->pro_expires_at,
+                    'trialExpiresAt' => $trialExpiresAt->toIso8601String(),
+                    'isTrialExpired' => $isTrialExpired,
+                    'trialDaysRemaining' => $trialDaysRemaining,
                     'roles' => json_decode($userRow->roles ?: '[]', true) ?: [],
                     'permissions' => json_decode($userRow->permissions ?: '[]', true) ?: [],
                     'pendingUpgrade' => $pendingUpgrade ? [
@@ -238,18 +249,19 @@ class CloudSyncController extends Controller
             ])->values();
 
         $userRow = $request->attributes->get('iam_user');
+        $isFree = ($userRow->plan_tier ?? 'free') === 'free';
 
         return response()->json([
             'sub' => $sub,
-            'plan_tier' => $userRow->plan_tier ?? 'pro',
+            'plan_tier' => $userRow->plan_tier ?? 'free',
             'syncedAt' => Carbon::now()->toIso8601String(),
-            'wallets' => $wallets,
+            'wallets' => $isFree ? $wallets->take(2)->values() : $wallets,
             'categories' => $categories,
             'transactions' => $transactions,
-            'budgets' => $budgets,
-            'savingGoals' => $savingGoals,
-            'recurringBills' => $recurringBills,
-            'inbox' => $inbox,
+            'budgets' => $isFree ? [] : $budgets,
+            'savingGoals' => $isFree ? [] : $savingGoals,
+            'recurringBills' => $isFree ? [] : $recurringBills,
+            'inbox' => $isFree ? [] : $inbox,
         ]);
     }
 
@@ -262,8 +274,19 @@ class CloudSyncController extends Controller
         $now = Carbon::now();
         $nowMs = (int) round(microtime(true) * 1000);
 
-        DB::transaction(function () use ($request, $sub, $now, $nowMs) {
-            foreach ((array) $request->input('wallets', []) as $w) {
+        $isFree = ($userRow->plan_tier ?? 'free') === 'free';
+        $createdAt = $userRow->created_at ? Carbon::parse($userRow->created_at) : $now;
+        $trialExpiresAt = $createdAt->copy()->addDays(14);
+        $isTrialExpired = $isFree && $now->greaterThan($trialExpiresAt);
+
+        DB::transaction(function () use ($request, $sub, $now, $nowMs, $isFree, $isTrialExpired) {
+            // Free Starter: maksimal simpan 2 dompet
+            $walletsInput = (array) $request->input('wallets', []);
+            if ($isFree) {
+                $walletsInput = array_slice($walletsInput, 0, 2);
+            }
+
+            foreach ($walletsInput as $w) {
                 if (empty($w['id'])) {
                     continue;
                 }
@@ -299,7 +322,15 @@ class CloudSyncController extends Controller
                 );
             }
 
-            foreach ((array) $request->input('transactions', []) as $t) {
+            // Transaksi: jika trial telah habis pada user Free, tolak penambahan transaksi baru
+            $txInput = (array) $request->input('transactions', []);
+            if ($isTrialExpired) {
+                // Hanya boleh sinkronisasi update transaksi yang sudah ada sebelumnya
+                $existingTxIds = DB::table('finance_transactions')->where('user_sub', $sub)->pluck('client_id')->all();
+                $txInput = array_filter($txInput, fn ($t) => in_array((string) ($t['id'] ?? ''), $existingTxIds, true));
+            }
+
+            foreach ($txInput as $t) {
                 if (empty($t['id'])) {
                     continue;
                 }
@@ -322,84 +353,87 @@ class CloudSyncController extends Controller
                 );
             }
 
-            foreach ((array) $request->input('budgets', []) as $b) {
-                if (empty($b['id'])) {
-                    continue;
+            // Fitur Khusus Pro: Anggaran, Celengan Impian, Tagihan Rutin, Smart Inbox
+            if (! $isFree) {
+                foreach ((array) $request->input('budgets', []) as $b) {
+                    if (empty($b['id'])) {
+                        continue;
+                    }
+                    DB::table('finance_budgets')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => (string) $b['id']],
+                        [
+                            'category_id' => (string) ($b['categoryId'] ?? 'cat-food'),
+                            'monthly_limit' => (float) ($b['monthlyLimit'] ?? 0),
+                            'month' => (string) ($b['month'] ?? $now->format('Y-m')),
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_budgets')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $b['id']],
-                    [
-                        'category_id' => (string) ($b['categoryId'] ?? 'cat-food'),
-                        'monthly_limit' => (float) ($b['monthlyLimit'] ?? 0),
-                        'month' => (string) ($b['month'] ?? $now->format('Y-m')),
-                        'updated_at' => $now,
-                    ]
-                );
-            }
 
-            foreach ((array) $request->input('savingGoals', []) as $g) {
-                if (empty($g['id'])) {
-                    continue;
+                foreach ((array) $request->input('savingGoals', []) as $g) {
+                    if (empty($g['id'])) {
+                        continue;
+                    }
+                    DB::table('finance_saving_goals')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => (string) $g['id']],
+                        [
+                            'name' => (string) ($g['name'] ?? 'Goal'),
+                            'target_amount' => (float) ($g['targetAmount'] ?? 0),
+                            'current_amount' => (float) ($g['currentAmount'] ?? 0),
+                            'target_date' => $g['targetDate'] ?? null,
+                            'icon' => $g['icon'] ?? 'Shield',
+                            'color' => $g['color'] ?? '#10b981',
+                            'notes' => $g['notes'] ?? null,
+                            'created_ms' => (int) ($g['createdAt'] ?? $nowMs),
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_saving_goals')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $g['id']],
-                    [
-                        'name' => (string) ($g['name'] ?? 'Goal'),
-                        'target_amount' => (float) ($g['targetAmount'] ?? 0),
-                        'current_amount' => (float) ($g['currentAmount'] ?? 0),
-                        'target_date' => $g['targetDate'] ?? null,
-                        'icon' => $g['icon'] ?? 'Shield',
-                        'color' => $g['color'] ?? '#10b981',
-                        'notes' => $g['notes'] ?? null,
-                        'created_ms' => (int) ($g['createdAt'] ?? $nowMs),
-                        'updated_at' => $now,
-                    ]
-                );
-            }
 
-            foreach ((array) $request->input('recurringBills', []) as $r) {
-                if (empty($r['id'])) {
-                    continue;
+                foreach ((array) $request->input('recurringBills', []) as $r) {
+                    if (empty($r['id'])) {
+                        continue;
+                    }
+                    DB::table('finance_recurring_bills')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => (string) $r['id']],
+                        [
+                            'name' => (string) ($r['name'] ?? 'Tagihan'),
+                            'amount' => (float) ($r['amount'] ?? 0),
+                            'category_id' => (string) ($r['categoryId'] ?? 'cat-bills'),
+                            'wallet_id' => (string) ($r['walletId'] ?? 'wallet-bca'),
+                            'due_day' => (int) ($r['dueDay'] ?? 1),
+                            'billing_cycle' => (string) ($r['billingCycle'] ?? 'monthly'),
+                            'is_active' => (bool) ($r['isActive'] ?? true),
+                            'notes' => $r['notes'] ?? null,
+                            'last_paid_date' => $r['lastPaidDate'] ?? null,
+                            'created_ms' => (int) ($r['createdAt'] ?? $nowMs),
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_recurring_bills')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $r['id']],
-                    [
-                        'name' => (string) ($r['name'] ?? 'Tagihan'),
-                        'amount' => (float) ($r['amount'] ?? 0),
-                        'category_id' => (string) ($r['categoryId'] ?? 'cat-bills'),
-                        'wallet_id' => (string) ($r['walletId'] ?? 'wallet-bca'),
-                        'due_day' => (int) ($r['dueDay'] ?? 1),
-                        'billing_cycle' => (string) ($r['billingCycle'] ?? 'monthly'),
-                        'is_active' => (bool) ($r['isActive'] ?? true),
-                        'notes' => $r['notes'] ?? null,
-                        'last_paid_date' => $r['lastPaidDate'] ?? null,
-                        'created_ms' => (int) ($r['createdAt'] ?? $nowMs),
-                        'updated_at' => $now,
-                    ]
-                );
-            }
 
-            foreach ((array) $request->input('inbox', []) as $i) {
-                if (empty($i['id'])) {
-                    continue;
+                foreach ((array) $request->input('inbox', []) as $i) {
+                    if (empty($i['id'])) {
+                        continue;
+                    }
+                    DB::table('finance_inbox_items')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => (string) $i['id']],
+                        [
+                            'source' => (string) ($i['source'] ?? 'MANUAL'),
+                            'raw_message' => (string) ($i['rawMessage'] ?? ''),
+                            'detected_amount' => (float) ($i['detectedAmount'] ?? 0),
+                            'detected_type' => (string) ($i['detectedType'] ?? 'expense'),
+                            'detected_merchant' => $i['detectedMerchant'] ?? null,
+                            'detected_date' => (string) ($i['detectedDate'] ?? $now->toIso8601String()),
+                            'suggested_wallet_id' => $i['suggestedWalletId'] ?? null,
+                            'suggested_category_id' => $i['suggestedCategoryId'] ?? null,
+                            'status' => (string) ($i['status'] ?? 'PENDING'),
+                            'notes' => $i['notes'] ?? null,
+                            'created_ms' => (int) ($i['createdAt'] ?? $nowMs),
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_inbox_items')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $i['id']],
-                    [
-                        'source' => (string) ($i['source'] ?? 'MANUAL'),
-                        'raw_message' => (string) ($i['rawMessage'] ?? ''),
-                        'detected_amount' => (float) ($i['detectedAmount'] ?? 0),
-                        'detected_type' => (string) ($i['detectedType'] ?? 'expense'),
-                        'detected_merchant' => $i['detectedMerchant'] ?? null,
-                        'detected_date' => (string) ($i['detectedDate'] ?? $now->toIso8601String()),
-                        'suggested_wallet_id' => $i['suggestedWalletId'] ?? null,
-                        'suggested_category_id' => $i['suggestedCategoryId'] ?? null,
-                        'status' => (string) ($i['status'] ?? 'PENDING'),
-                        'notes' => $i['notes'] ?? null,
-                        'created_ms' => (int) ($i['createdAt'] ?? $nowMs),
-                        'updated_at' => $now,
-                    ]
-                );
             }
 
             $walletsCount = DB::table('finance_wallets')->where('user_sub', $sub)->count();
@@ -420,7 +454,8 @@ class CloudSyncController extends Controller
         return response()->json([
             'ok' => true,
             'sub' => $sub,
-            'plan_tier' => $userRow->plan_tier ?? 'pro',
+            'plan_tier' => $userRow->plan_tier ?? 'free',
+            'isTrialExpired' => $isTrialExpired,
             'syncedAt' => $now->toIso8601String(),
         ]);
     }

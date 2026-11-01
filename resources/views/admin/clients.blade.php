@@ -86,7 +86,20 @@
                             @elseif ($c->plan_tier === 'pro' && $c->pro_expires_at)
                                 <span>s/d {{ \Illuminate\Support\Str::limit($c->pro_expires_at, 10, '') }}</span>
                             @else
-                                <span class="text-slate-500">—</span>
+                                @php
+                                    $created = $c->created_at ? \Carbon\Carbon::parse($c->created_at) : now();
+                                    $trialEnd = $created->copy()->addDays(14);
+                                    $isExpired = now()->greaterThan($trialEnd);
+                                    $daysLeft = max(0, (int) ceil(now()->floatDiffInDays($trialEnd, false)));
+                                @endphp
+                                @if ($isExpired)
+                                    <span class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 text-[10px] font-bold">
+                                        Trial Berakhir ⚠️
+                                    </span>
+                                @else
+                                    <div class="text-xs text-amber-300 font-medium">Trial: sisa {{ $daysLeft }} hari</div>
+                                    <div class="text-[10px] text-slate-500">s/d {{ $trialEnd->format('Y-m-d') }}</div>
+                                @endif
                             @endif
                         </td>
 

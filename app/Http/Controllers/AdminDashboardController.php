@@ -183,7 +183,13 @@ class AdminDashboardController extends Controller
             });
         }
 
-        $clients = $query->get();
+        $clients = $query->get()->map(function ($c) {
+            $realWallets = DB::table('finance_wallets')->where('user_sub', $c->sub)->count();
+            $realTx = DB::table('finance_transactions')->where('user_sub', $c->sub)->count();
+            $c->wallets_count = $realWallets;
+            $c->transactions_count = $realTx;
+            return $c;
+        });
 
         return view('admin.clients', array_merge($base, [
             'clients' => $clients,

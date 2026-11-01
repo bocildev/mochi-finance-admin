@@ -318,59 +318,70 @@ class IamSsoService
 
     public function ensureDefaultPlansExist(): void
     {
-        if (DB::table('saas_plans')->exists()) {
-            return;
-        }
-
         $now = Carbon::now();
-        DB::table('saas_plans')->insert([
-            [
-                'key' => 'free',
-                'name' => 'Mochi Free Starter',
-                'badge' => 'FREE STARTER',
-                'monthly_price' => 0,
-                'yearly_price' => 0,
+        if (! DB::table('saas_plans')->where('key', 'free')->exists()) {
+            DB::table('saas_plans')->insert([
+                [
+                    'key' => 'free',
+                    'name' => 'Mochi Free Starter',
+                    'badge' => 'FREE STARTER',
+                    'monthly_price' => 0,
+                    'yearly_price' => 0,
+                    'max_wallets' => 2,
+                    'max_budgets' => 0,
+                    'max_goals' => 0,
+                    'allow_cloud_sync' => true,
+                    'allow_smart_inbox' => false,
+                    'allow_analytics' => false,
+                    'allow_csv_export' => false,
+                    'features' => json_encode([
+                        'Pencatatan Transaksi Harian (Trial 14 Hari)',
+                        'Maksimal 2 Dompet / Rekening Aktif',
+                        'Cloud Sync & Backup Otomatis (Maks 2 Dompet)',
+                        'Keamanan Kunci PIN 4 Digit',
+                    ]),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ],
+                [
+                    'key' => 'pro',
+                    'name' => 'Mochi Pro Plus ✨',
+                    'badge' => 'MOCHI PRO ✨',
+                    'monthly_price' => 29000,
+                    'yearly_price' => 249000,
+                    'max_wallets' => -1,
+                    'max_budgets' => -1,
+                    'max_goals' => -1,
+                    'allow_cloud_sync' => true,
+                    'allow_smart_inbox' => true,
+                    'allow_analytics' => true,
+                    'allow_csv_export' => true,
+                    'features' => json_encode([
+                        'Dompet, Rekening, Anggaran, & Celengan Tanpa Batas (Unlimited)',
+                        'Cloud Sync & Backup Otomatis Lintas Perangkat (HP & Laptop)',
+                        'Smart Inbox Otomatis (Deteksi Mutasi BCA, Mandiri, GoPay, OVO)',
+                        'Grafik & Analitik Cashflow 6 Bulan + Kategori Donut',
+                        'Ekspor Laporan Keuangan CSV (Excel Compatible)',
+                        'Tagihan & Langganan Rutin (1-Click Pay)',
+                    ]),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ],
+            ]);
+        } else {
+            DB::table('saas_plans')->where('key', 'free')->update([
                 'max_wallets' => 2,
-                'max_budgets' => 2,
-                'max_goals' => 1,
-                'allow_cloud_sync' => false,
-                'allow_smart_inbox' => false,
-                'allow_analytics' => false,
-                'allow_csv_export' => false,
+                'max_budgets' => 0,
+                'max_goals' => 0,
+                'allow_cloud_sync' => true,
                 'features' => json_encode([
-                    'Pencatatan Transaksi Harian (Offline IndexedDB)',
-                    'Maksimal 2 Dompet / Rekening',
-                    'Maksimal 2 Alokasi Anggaran Bulanan',
-                    'Maksimal 1 Celengan Impian (Saving Goal)',
+                    'Pencatatan Transaksi Harian (Trial 14 Hari)',
+                    'Maksimal 2 Dompet / Rekening Aktif',
+                    'Cloud Sync & Backup Otomatis (Maks 2 Dompet)',
                     'Keamanan Kunci PIN 4 Digit',
                 ]),
-                'created_at' => $now,
                 'updated_at' => $now,
-            ],
-            [
-                'key' => 'pro',
-                'name' => 'Mochi Pro Plus ✨',
-                'badge' => 'MOCHI PRO ✨',
-                'monthly_price' => 29000,
-                'yearly_price' => 249000,
-                'max_wallets' => -1,
-                'max_budgets' => -1,
-                'max_goals' => -1,
-                'allow_cloud_sync' => true,
-                'allow_smart_inbox' => true,
-                'allow_analytics' => true,
-                'allow_csv_export' => true,
-                'features' => json_encode([
-                    'Dompet, Rekening, Anggaran, & Celengan Tanpa Batas (Unlimited)',
-                    'Cloud Sync & Backup Otomatis Lintas Perangkat (HP & Laptop)',
-                    'Smart Inbox Otomatis (Deteksi Mutasi BCA, Mandiri, GoPay, OVO)',
-                    'Grafik & Analitik Cashflow 6 Bulan + Kategori Donut',
-                    'Ekspor Laporan Keuangan CSV (Excel Compatible)',
-                    'Tagihan & Langganan Rutin (1-Click Pay)',
-                ]),
-                'created_at' => $now,
-                'updated_at' => $now,
-            ],
-        ]);
+            ]);
+        }
     }
 }

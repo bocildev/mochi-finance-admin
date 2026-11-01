@@ -107,11 +107,20 @@ class MochiSsoAndSyncTest extends TestCase
         $this->withSession($freeSession)->get('/')->assertStatus(403);
         $this->withSession($freeSession)->get('/clients')->assertStatus(403);
 
-        // 2. Free user dilarang pakai fitur Cloud Sync (butuh finance.sync)
+        // 2. Free user diizinkan Cloud Sync dompet (maksimal 2 dompet untuk masa trial)
         $freeToken = $this->issueAccessToken('usr_free_01', ['free_user'], ['finance.basic']);
         $this->withHeader('Authorization', 'Bearer '.$freeToken)
-            ->postJson('/api/v1/sync/push', ['wallets' => []])
-            ->assertStatus(403);
+            ->postJson('/api/v1/sync/push', [
+                'wallets' => [
+                    ['id' => 'w-1', 'name' => 'Dompet 1', 'balance' => 100000],
+                    ['id' => 'w-2', 'name' => 'Dompet 2', 'balance' => 200000],
+                    ['id' => 'w-3', 'name' => 'Dompet 3', 'balance' => 300000], // Kelebihan kuota (maks 2)
+                ],
+            ])
+            ->assertOk();
+
+        // Hanya 2 dompet pertama yang tersimpan untuk Free
+        $this->assertEquals(2, \Illuminate\Support\Facades\DB::table('finance_wallets')->where('user_sub', 'usr_free_01')->count());
 
         // 3. Free user bisa mengajukan Upgrade ke Mochi Pro via API
         $upRes = $this->withHeader('Authorization', 'Bearer '.$freeToken)

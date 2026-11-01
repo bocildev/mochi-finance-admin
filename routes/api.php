@@ -17,13 +17,13 @@ Route::prefix('v1')->group(function () {
     Route::prefix('sync')->group(function () {
         Route::options('/{any}', fn () => response('', 204))->where('any', '.*')->middleware('iam.jwt');
 
-        // Cloud Sync HANYA untuk member Mochi Pro & Admin (permission: finance.sync)
+        // Cloud Sync untuk member Mochi Free (Trial 2 dompet), Pro, dan Admin
         Route::get('/pull', [CloudSyncController::class, 'pull'])
-            ->middleware('iam.jwt:finance.sync')
+            ->middleware('iam.jwt:finance.basic')
             ->name('api.sync.pull');
 
         Route::post('/push', [CloudSyncController::class, 'push'])
-            ->middleware('iam.jwt:finance.sync')
+            ->middleware('iam.jwt:finance.basic')
             ->name('api.sync.push');
     });
 });
