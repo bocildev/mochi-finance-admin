@@ -138,7 +138,201 @@ class CloudSyncController extends Controller
     {
         /** @var Claims $claims */
         $claims = $request->attributes->get('iam_claims');
+        $userRow = $request->attributes->get('iam_user');
         $sub = $claims->sub;
+
+        // Auto-heal / remap jika ada data dari sub lama (misal: perbedaan 60bc... vs 69bc... dari seeder/hosting)
+        if ($userRow && in_array(strtolower($userRow->email ?? ''), ['athallahrich@gmail.com', 'admin@iam-sso.local'], true)) {
+            DB::table('finance_wallets')
+                ->where('user_sub', '!=', $sub)
+                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
+                ->update(['user_sub' => $sub]);
+
+            DB::table('finance_transactions')
+                ->where('user_sub', '!=', $sub)
+                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
+                ->update(['user_sub' => $sub]);
+
+            DB::table('finance_categories')
+                ->where('user_sub', '!=', $sub)
+                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
+                ->update(['user_sub' => $sub]);
+
+            // Jika akun owner sama sekali belum memiliki dompet fisik di cloud, sediakan 3 dompet resmi bawaan
+            $existingWalletsCount = DB::table('finance_wallets')->where('user_sub', $sub)->count();
+            if ($existingWalletsCount === 0) {
+                $now = Carbon::now();
+                $nowMs = (int) round(microtime(true) * 1000);
+                DB::table('finance_wallets')->insert([
+                    [
+                        'user_sub' => $sub,
+                        'client_id' => 'wallet-bca',
+                        'name' => 'BCA Utama',
+                        'type' => 'bank',
+                        'balance' => 7500000.00,
+                        'account_number' => '8210-xxxx-xx',
+                        'icon' => null,
+                        'color' => '#005baa',
+                        'created_ms' => $nowMs,
+                        'updated_ms' => $nowMs,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                    [
+                        'user_sub' => $sub,
+                        'client_id' => 'wallet-gopay',
+                        'name' => 'GoPay',
+                        'type' => 'ewallet',
+                        'balance' => 350000.00,
+                        'account_number' => null,
+                        'icon' => null,
+                        'color' => '#00aed6',
+                        'created_ms' => $nowMs,
+                        'updated_ms' => $nowMs,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                    [
+                        'user_sub' => $sub,
+                        'client_id' => 'wallet-cash',
+                        'name' => 'Uang Tunai (Dompet)',
+                        'type' => 'cash',
+                        'balance' => 450000.00,
+                        'account_number' => null,
+                        'icon' => null,
+                        'color' => '#10b981',
+                        'created_ms' => $nowMs,
+                        'updated_ms' => $nowMs,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                ]);
+
+                if (DB::table('finance_transactions')->where('user_sub', $sub)->count() === 0) {
+                    DB::table('finance_transactions')->insert([
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-1',
+                            'wallet_id' => 'wallet-bca',
+                            'target_wallet_id' => null,
+                            'amount' => 8500000.00,
+                            'type' => 'income',
+                            'category_id' => 'cat-salary',
+                            'notes' => 'Gaji Bulanan PT Digital Mandiri',
+                            'tx_date' => Carbon::now()->subDays(5)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - (86400000 * 5),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-2',
+                            'wallet_id' => 'wallet-bca',
+                            'target_wallet_id' => null,
+                            'amount' => 1150000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-food',
+                            'notes' => 'Belanja Mingguan & Kopi Mochi',
+                            'tx_date' => Carbon::now()->subDays(4)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - (86400000 * 4),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-3',
+                            'wallet_id' => 'wallet-bca',
+                            'target_wallet_id' => null,
+                            'amount' => 1150000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-food',
+                            'notes' => 'Belanja Mingguan Supermarket & Makan Bersama',
+                            'tx_date' => Carbon::now()->subDays(3)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - (86400000 * 3),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-4',
+                            'wallet_id' => 'wallet-gopay',
+                            'target_wallet_id' => null,
+                            'amount' => 320000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-transport',
+                            'notes' => 'Bensin Shell & Top up Saldo Tol',
+                            'tx_date' => Carbon::now()->subDays(2)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - (86400000 * 2),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-5',
+                            'wallet_id' => 'wallet-bca',
+                            'target_wallet_id' => null,
+                            'amount' => 450000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-bills',
+                            'notes' => 'Listrik PLN Bulanan',
+                            'tx_date' => Carbon::now()->subDays(2)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - (86400000 * 2),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-6',
+                            'wallet_id' => 'wallet-gopay',
+                            'target_wallet_id' => null,
+                            'amount' => 186000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-entertainment',
+                            'notes' => 'Netflix Premium Langganan',
+                            'tx_date' => Carbon::now()->subDays(1)->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs - 86400000,
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                        [
+                            'user_sub' => $sub,
+                            'client_id' => 'tx-seed-7',
+                            'wallet_id' => 'wallet-cash',
+                            'target_wallet_id' => null,
+                            'amount' => 65000.00,
+                            'type' => 'expense',
+                            'category_id' => 'cat-food',
+                            'notes' => 'Kopi Susu Gula Aren & Kue Mochi 🍡',
+                            'tx_date' => Carbon::now()->toIso8601String(),
+                            'receipt_image' => null,
+                            'tags' => '[]',
+                            'inbox_ref_id' => null,
+                            'created_ms' => $nowMs,
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ],
+                    ]);
+                }
+            }
+        }
 
         $wallets = DB::table('finance_wallets')
             ->where('user_sub', $sub)

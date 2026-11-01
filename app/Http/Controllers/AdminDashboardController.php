@@ -120,13 +120,18 @@ class AdminDashboardController extends Controller
         $mrr = ($monthlyProCount * $monthlyPrice) + ($yearlyProCount * ($yearlyPrice / 12));
         $conversionRate = $totalClients > 0 ? round(($proClients / $totalClients) * 100, 1) : 0.0;
 
-        $totalSyncedWallets = (int) DB::table('finance_users')->sum('wallets_count');
-        $totalSyncedTx = (int) DB::table('finance_users')->sum('transactions_count');
+        $totalSyncedWallets = (int) DB::table('finance_wallets')->count();
+        $totalSyncedTx = (int) DB::table('finance_transactions')->count();
 
         $recentClients = DB::table('finance_users')
             ->orderByDesc('created_at')
             ->limit(8)
-            ->get();
+            ->get()
+            ->map(function ($c) {
+                $c->wallets_count = DB::table('finance_wallets')->where('user_sub', $c->sub)->count();
+                $c->transactions_count = DB::table('finance_transactions')->where('user_sub', $c->sub)->count();
+                return $c;
+            });
 
         $recentUpgrades = DB::table('upgrade_requests')
             ->orderByDesc('created_at')
