@@ -145,9 +145,21 @@
                                         @csrf
                                         <button
                                             type="submit"
-                                            class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition {{ $c->status === 'active' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20' }}"
+                                            class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition {{ $c->status === 'active' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20' }}"
                                         >
                                             {{ $c->status === 'active' ? 'Suspend' : 'Aktifkan' }}
+                                        </button>
+                                    </form>
+
+                                    <form method="POST" action="{{ route('admin.clients.delete', $c->sub) }}" class="inline" onsubmit="return confirm('⚠️ PERINGATAN:\n\nApakah Anda yakin ingin MENGHAPUS klien &quot;{{ $c->name }}&quot; ({{ $c->email }})?\n\nSeluruh data brankas cloud (dompet, transaksi, celengan, tagihan, inbox) milik klien ini di Mochi Finance akan dihapus permanen.');">
+                                        @csrf
+                                        @method('DELETE')
+                                        <button
+                                            type="submit"
+                                            class="px-2 py-1 rounded-lg text-[11px] font-bold border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition"
+                                            title="Hapus Klien & Seluruh Brankas Cloud"
+                                        >
+                                            Hapus Klien
                                         </button>
                                     </form>
                                 </div>

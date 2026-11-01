@@ -334,4 +334,46 @@ class AdminDashboardController extends Controller
 
         return back()->with('status', 'Konfigurasi paket '.strtoupper($key).' berhasil diperbarui dan langsung berlaku di aplikasi PWA!');
     }
+
+    public function deleteClient(Request $request, string $sub)
+    {
+        $client = DB::table('finance_users')->where('sub', $sub)->first();
+        if (! $client) {
+            return back()->with('error', 'Klien tidak ditemukan.');
+        }
+
+        // Proteksi Platform Owner
+        $isOwner = in_array(strtolower($client->email), ['athallahrich@gmail.com', 'admin@iam-sso.local'], true)
+            || $client->plan_tier === 'admin';
+
+        if ($isOwner) {
+            return back()->with('error', 'Akun Platform Owner / Administrator tidak dapat dihapus.');
+        }
+
+        DB::transaction(function () use ($sub) {
+            DB::table('finance_wallets')->where('user_sub', $sub)->delete();
+            DB::table('finance_categories')->where('user_sub', $sub)->delete();
+            DB::table('finance_transactions')->where('user_sub', $sub)->delete();
+            DB::table('finance_budgets')->where('user_sub', $sub)->delete();
+            DB::table('finance_saving_goals')->where('user_sub', $sub)->delete();
+            DB::table('finance_recurring_bills')->where('user_sub', $sub)->delete();
+            DB::table('finance_inbox_items')->where('user_sub', $sub)->delete();
+            DB::table('upgrade_requests')->where('user_sub', $sub)->delete();
+            DB::table('finance_users')->where('sub', $sub)->delete();
+        });
+
+        return back()->with('status', 'Klien '.$client->name.' ('.$client->email.') beserta seluruh data cloud berhasil dihapus permanen dari Mochi Finance.');
+    }
+
+    public function deleteUpgrade(Request $request, int $id)
+    {
+        $reqRow = DB::table('upgrade_requests')->where('id', $id)->first();
+        if (! $reqRow) {
+            return back()->with('error', 'Riwayat pengajuan upgrade tidak ditemukan.');
+        }
+
+        DB::table('upgrade_requests')->where('id', $id)->delete();
+
+        return back()->with('status', 'Riwayat pengajuan upgrade ID #'.$id.' berhasil dihapus.');
+    }
 }

@@ -16,9 +16,11 @@ Route::middleware('sso:finance.admin')->group(function () {
     Route::get('/clients', [AdminDashboardController::class, 'clients'])->name('admin.clients');
     Route::post('/clients/{sub}/tier', [AdminDashboardController::class, 'updateClientTier'])->name('admin.clients.tier');
     Route::post('/clients/{sub}/status', [AdminDashboardController::class, 'toggleClientStatus'])->name('admin.clients.status');
+    Route::delete('/clients/{sub}', [AdminDashboardController::class, 'deleteClient'])->name('admin.clients.delete');
 
     Route::get('/upgrades', [AdminDashboardController::class, 'upgrades'])->name('admin.upgrades');
     Route::post('/upgrades/{id}/review', [AdminDashboardController::class, 'reviewUpgrade'])->name('admin.upgrades.review');
+    Route::delete('/upgrades/{id}', [AdminDashboardController::class, 'deleteUpgrade'])->name('admin.upgrades.delete');
 
     Route::get('/plans', [AdminDashboardController::class, 'plans'])->name('admin.plans');
     Route::post('/plans/{key}', [AdminDashboardController::class, 'updatePlan'])->name('admin.plans.update');

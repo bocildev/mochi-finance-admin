@@ -305,4 +305,77 @@ class MochiSsoAndSyncTest extends TestCase
             ->assertJsonPath('sub', 'usr_pwa_client_01')
             ->assertJsonPath('plan_tier', 'free');
     }
+
+    public function test_delete_client_and_upgrade_request(): void
+    {
+        $adminSession = [
+            'iam_user' => [
+                'sub' => 'usr_owner_adam',
+                'name' => 'Moch. Adam Athallahrich',
+                'email' => 'athallahrich@gmail.com',
+                'roles' => ['admin'],
+                'permissions' => ['finance.admin', 'finance.basic', 'finance.sync'],
+                'plan_tier' => 'admin',
+            ],
+        ];
+
+        // Insert client to delete
+        DB::table('finance_users')->insert([
+            'sub' => 'usr_to_delete',
+            'name' => 'To Delete',
+            'email' => 'delete@example.com',
+            'roles' => json_encode(['free_user']),
+            'permissions' => json_encode(['finance.basic']),
+            'plan_tier' => 'free',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('finance_wallets')->insert([
+            'user_sub' => 'usr_to_delete',
+            'client_id' => 'w_del_1',
+            'name' => 'Dompet Hapus',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $upgId = DB::table('upgrade_requests')->insertGetId([
+            'user_sub' => 'usr_other_client',
+            'user_name' => 'Other Client',
+            'user_email' => 'other@example.com',
+            'requested_plan' => 'pro_monthly',
+            'amount' => 29000,
+            'payment_method' => 'QRIS',
+            'status' => 'PENDING',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // Attempting to delete owner should fail
+        DB::table('finance_users')->insert([
+            'sub' => 'usr_owner_adam',
+            'name' => 'Owner',
+            'email' => 'athallahrich@gmail.com',
+            'plan_tier' => 'admin',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->withSession($adminSession)->delete('/clients/usr_owner_adam')
+            ->assertSessionHas('error');
+        $this->assertDatabaseHas('finance_users', ['sub' => 'usr_owner_adam']);
+
+        // Delete regular client
+        $this->withSession($adminSession)->delete('/clients/usr_to_delete')
+            ->assertRedirect()->assertSessionHas('status');
+        $this->assertDatabaseMissing('finance_users', ['sub' => 'usr_to_delete']);
+        $this->assertDatabaseMissing('finance_wallets', ['user_sub' => 'usr_to_delete']);
+
+        // Delete upgrade request
+        $this->withSession($adminSession)->delete('/upgrades/'.$upgId)
+            ->assertRedirect()->assertSessionHas('status');
+        $this->assertDatabaseMissing('upgrade_requests', ['id' => $upgId]);
+    }
 }

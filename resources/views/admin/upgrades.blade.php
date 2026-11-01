@@ -52,13 +52,13 @@
                             </span>
                         </td>
                         <td class="py-4 pl-4 text-right">
-                            @if ($r->status === 'PENDING')
-                                <div class="inline-flex items-center gap-2">
+                            <div class="inline-flex items-center gap-2">
+                                @if ($r->status === 'PENDING')
                                     <form method="POST" action="{{ route('admin.upgrades.review', $r->id) }}">
                                         @csrf
                                         <input type="hidden" name="action" value="APPROVE">
                                         <button type="submit" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs transition">
-                                            ✓ Setujui & Aktifkan Pro
+                                            ✓ Setujui &amp; Aktifkan Pro
                                         </button>
                                     </form>
                                     <form method="POST" action="{{ route('admin.upgrades.review', $r->id) }}">
@@ -68,12 +68,19 @@
                                             ✕ Tolak
                                         </button>
                                     </form>
-                                </div>
-                            @else
-                                <span class="text-[11px] text-slate-500 font-mono-code">
-                                    Oleh {{ $r->reviewed_by ?: 'Admin' }}
-                                </span>
-                            @endif
+                                @else
+                                    <span class="text-[11px] text-slate-500 font-mono-code mr-1">
+                                        Oleh {{ $r->reviewed_by ?: 'Admin' }}
+                                    </span>
+                                @endif
+                                <form method="POST" action="{{ route('admin.upgrades.delete', $r->id) }}" class="inline" onsubmit="return confirm('Hapus riwayat pengajuan upgrade #{{ $r->id }}?');">
+                                    @csrf
+                                    @method('DELETE')
+                                    <button type="submit" class="p-1.5 rounded-lg border border-slate-700 bg-slate-800/60 text-slate-400 hover:text-rose-400 hover:border-rose-500/40 transition" title="Hapus Riwayat">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    </button>
+                                </form>
+                            </div>
                         </td>
                     </tr>
                 @empty
