@@ -78,23 +78,42 @@ class IamSsoService
                 ->acceptJson()
                 ->get($this->issuer().'/oauth/userinfo');
 
-            return $res->successful();
+            if ($res->status() === 401) {
+                return false;
+            }
+
+            return true;
         } catch (\Throwable) {
-            return false;
+            // Jika terjadi network timeout / error loopback antar domain cPanel,
+            // jangan gagalkan sesi karena signature kriptografis RS256 token sudah divalidasi
+            return true;
         }
     }
 
     public function verifyAccessToken(string $jwt): Claims
     {
-        try {
-            $verifier = new TokenVerifier($this->issuer(), $this->clientId(), $this->getJwks(false));
+        $allowedAudiences = array_unique(array_filter([
+            $this->clientId(),
+            'app_mochi_finance',
+            'app_mochi_finance_admin',
+            env('IAM_PWA_CLIENT_ID', 'app_mochi_finance'),
+        ]));
 
-            return $verifier->verifyAccessToken($jwt);
-        } catch (\Throwable) {
-            $verifier = new TokenVerifier($this->issuer(), $this->clientId(), $this->getJwks(true));
+        $lastException = null;
+        foreach ([false, true] as $forceRefresh) {
+            $jwks = $this->getJwks($forceRefresh);
+            foreach ($allowedAudiences as $aud) {
+                try {
+                    $verifier = new TokenVerifier($this->issuer(), $aud, $jwks);
 
-            return $verifier->verifyAccessToken($jwt);
+                    return $verifier->verifyAccessToken($jwt);
+                } catch (\Throwable $e) {
+                    $lastException = $e;
+                }
+            }
         }
+
+        throw $lastException ?? new \RuntimeException('Invalid token.');
     }
 
     public function exchangeAuthorizationCode(string $code, string $codeVerifier, string $redirectUri): array

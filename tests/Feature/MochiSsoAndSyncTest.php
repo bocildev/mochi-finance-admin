@@ -282,4 +282,27 @@ class MochiSsoAndSyncTest extends TestCase
             'status' => 'disabled',
         ]);
     }
+
+    public function test_token_issued_to_pwa_client_app_mochi_finance_is_accepted_for_cloud_sync(): void
+    {
+        $payload = [
+            'iss' => rtrim((string) config('iam.issuer'), '/'),
+            'sub' => 'usr_pwa_client_01',
+            'aud' => 'app_mochi_finance', // PWA client ID (bukan app_mochi_finance_admin)
+            'iat' => time(),
+            'exp' => time() + 3600,
+            'typ' => 'access',
+            'roles' => ['free_user'],
+            'permissions' => ['finance.basic'],
+        ];
+
+        $pwaToken = JWT::encode($payload, $this->privateKeyPem, 'RS256', 'test-key-1');
+
+        $res = $this->withHeader('Authorization', 'Bearer '.$pwaToken)
+            ->getJson('/api/v1/sync/pull');
+
+        $res->assertOk()
+            ->assertJsonPath('sub', 'usr_pwa_client_01')
+            ->assertJsonPath('plan_tier', 'free');
+    }
 }
