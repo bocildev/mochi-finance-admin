@@ -345,4 +345,124 @@ class FinanceRestApiTest extends TestCase
         $this->assertStringContainsString('PUT', (string) $opt->headers->get('Access-Control-Allow-Methods'));
         $this->assertStringContainsString('PATCH', (string) $opt->headers->get('Access-Control-Allow-Methods'));
     }
+
+    public function test_installment_vs_subscription_bills_remaining_tenor_and_deletion(): void
+    {
+        $token = $this->tokenFor('usr_cicilan_user');
+
+        $walletId = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/wallets', ['name' => 'BCA', 'type' => 'bank', 'balance' => 3000000])
+            ->json('wallet.id');
+
+        // 1. Subscription bill defaults
+        $subBill = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Spotify Family',
+                'amount' => 86000,
+                'categoryId' => 'cat-entertainment',
+                'walletId' => $walletId,
+                'dueDay' => 5,
+                'billType' => 'subscription',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('recurringBill.billType', 'subscription')
+            ->assertJsonPath('recurringBill.totalTenor', null)
+            ->assertJsonPath('recurringBill.paidCount', 0);
+        $subId = $subBill->json('recurringBill.id');
+
+        // 2. Installment rejects paidCount > totalTenor or missing totalTenor
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Cicilan Error',
+                'amount' => 500000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 10,
+                'billType' => 'installment',
+            ])
+            ->assertStatus(422);
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Cicilan Overpaid',
+                'amount' => 500000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 10,
+                'billType' => 'installment',
+                'totalTenor' => 3,
+                'paidCount' => 4,
+            ])
+            ->assertStatus(422);
+
+        // 3. Create valid installment (3 tenor, 1 already paid -> 2 remaining)
+        $instRes = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Cicilan Laptop',
+                'amount' => 500000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 10,
+                'billType' => 'installment',
+                'totalTenor' => 3,
+                'paidCount' => 1,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('recurringBill.billType', 'installment')
+            ->assertJsonPath('recurringBill.totalTenor', 3)
+            ->assertJsonPath('recurringBill.paidCount', 1)
+            ->assertJsonPath('recurringBill.isActive', true);
+        $instId = $instRes->json('recurringBill.id');
+
+        // Pay installment 2/3
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$instId}/pay")
+            ->assertOk()
+            ->assertJsonPath('recurringBill.paidCount', 2)
+            ->assertJsonPath('recurringBill.isActive', true)
+            ->assertJsonPath('transaction.notes', 'Bayar Cicilan (2/3): Cicilan Laptop');
+
+        // Pay final installment 3/3 -> auto marked lunas (isActive = false)
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$instId}/pay")
+            ->assertOk()
+            ->assertJsonPath('recurringBill.paidCount', 3)
+            ->assertJsonPath('recurringBill.isActive', false)
+            ->assertJsonPath('transaction.notes', 'Bayar Cicilan (3/3): Cicilan Laptop');
+
+        $this->assertEquals(2000000.0, (float) DB::table('finance_wallets')->where('client_id', $walletId)->value('balance'));
+
+        // Cannot pay again after lunas
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$instId}/pay")
+            ->assertStatus(422)
+            ->assertJsonPath('error', 'already_paid_off');
+
+        // Cannot toggle back to active while already lunas
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->patchJson("/api/v1/recurring-bills/{$instId}/toggle")
+            ->assertStatus(422)
+            ->assertJsonPath('error', 'already_paid_off');
+
+        // Edit tenor from 3 -> 4 re-activates installment (1 remaining)
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson("/api/v1/recurring-bills/{$instId}", ['totalTenor' => 4])
+            ->assertOk()
+            ->assertJsonPath('recurringBill.totalTenor', 4)
+            ->assertJsonPath('recurringBill.paidCount', 3)
+            ->assertJsonPath('recurringBill.isActive', true);
+
+        // Delete both subscription and installment permanently
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->deleteJson("/api/v1/recurring-bills/{$subId}")
+            ->assertOk()
+            ->assertJsonPath('deleted', true);
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->deleteJson("/api/v1/recurring-bills/{$instId}")
+            ->assertOk()
+            ->assertJsonPath('deleted', true);
+
+        $this->assertDatabaseMissing('finance_recurring_bills', ['client_id' => $subId]);
+        $this->assertDatabaseMissing('finance_recurring_bills', ['client_id' => $instId]);
+    }
 }

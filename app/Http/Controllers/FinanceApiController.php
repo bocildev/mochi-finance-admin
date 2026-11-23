@@ -18,6 +18,15 @@ class FinanceApiController extends Controller
         private NotificationParserService $parser
     ) {}
 
+    public function corsPreflight(Request $request)
+    {
+        return response('', 204, [
+            'Access-Control-Allow-Origin' => $request->header('Origin', '*'),
+            'Access-Control-Allow-Methods' => 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers' => 'Content-Type, Authorization, Accept, X-Requested-With',
+        ]);
+    }
+
     private function sub(Request $request): string
     {
         /** @var Claims $claims */
@@ -808,9 +817,24 @@ class FinanceApiController extends Controller
             'walletId' => 'required|string|max:100',
             'dueDay' => 'required|integer|min:1|max:31',
             'billingCycle' => 'nullable|in:monthly,yearly',
+            'billType' => 'nullable|in:subscription,installment',
+            'totalTenor' => 'nullable|integer|min:1|max:600|required_if:billType,installment',
+            'paidCount' => 'nullable|integer|min:0|max:600',
             'notes' => 'nullable|string|max:1000',
         ]);
 
+        $billType = $data['billType'] ?? 'subscription';
+        $totalTenor = $billType === 'installment' ? (int) $data['totalTenor'] : null;
+        $paidCount = $billType === 'installment' ? (int) ($data['paidCount'] ?? 0) : 0;
+
+        if ($billType === 'installment' && $paidCount > $totalTenor) {
+            return response()->json([
+                'error' => 'validation_error',
+                'message' => 'Jumlah cicilan yang sudah dibayar tidak boleh melebihi total tenor.',
+            ], 422);
+        }
+
+        $isActive = $billType === 'installment' ? ($paidCount < $totalTenor) : true;
         $now = Carbon::now();
         $nowMs = $this->nowMs();
         $clientId = 'rec-'.$nowMs.'-'.Str::lower(Str::random(4));
@@ -824,7 +848,10 @@ class FinanceApiController extends Controller
             'wallet_id' => $data['walletId'],
             'due_day' => (int) $data['dueDay'],
             'billing_cycle' => $data['billingCycle'] ?? 'monthly',
-            'is_active' => true,
+            'bill_type' => $billType,
+            'total_tenor' => $totalTenor,
+            'paid_count' => $paidCount,
+            'is_active' => $isActive,
             'notes' => $data['notes'] ?? null,
             'last_paid_date' => null,
             'created_ms' => $nowMs,
@@ -857,11 +884,45 @@ class FinanceApiController extends Controller
             'walletId' => 'sometimes|required|string|max:100',
             'dueDay' => 'sometimes|required|integer|min:1|max:31',
             'billingCycle' => 'sometimes|in:monthly,yearly',
+            'billType' => 'sometimes|in:subscription,installment',
+            'totalTenor' => 'nullable|integer|min:1|max:600',
+            'paidCount' => 'nullable|integer|min:0|max:600',
             'isActive' => 'sometimes|boolean',
             'notes' => 'nullable|string|max:1000',
         ]);
 
-        $updates = ['updated_at' => Carbon::now()];
+        $resolvedType = $data['billType'] ?? ($existing->bill_type ?? 'subscription');
+        $resolvedTenor = array_key_exists('totalTenor', $data)
+            ? ($data['totalTenor'] !== null ? (int) $data['totalTenor'] : null)
+            : ($existing->total_tenor !== null ? (int) $existing->total_tenor : null);
+        $resolvedPaid = array_key_exists('paidCount', $data)
+            ? (int) ($data['paidCount'] ?? 0)
+            : (int) ($existing->paid_count ?? 0);
+
+        if ($resolvedType === 'installment') {
+            if (! $resolvedTenor || $resolvedTenor < 1) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Total tenor cicilan wajib diisi minimal 1 kali.',
+                ], 422);
+            }
+            if ($resolvedPaid > $resolvedTenor) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Jumlah cicilan yang sudah dibayar tidak boleh melebihi total tenor.',
+                ], 422);
+            }
+        } else {
+            $resolvedTenor = null;
+            $resolvedPaid = 0;
+        }
+
+        $updates = [
+            'updated_at' => Carbon::now(),
+            'bill_type' => $resolvedType,
+            'total_tenor' => $resolvedTenor,
+            'paid_count' => $resolvedPaid,
+        ];
         if (array_key_exists('name', $data)) {
             $updates['name'] = trim($data['name']);
         }
@@ -880,7 +941,15 @@ class FinanceApiController extends Controller
         if (array_key_exists('billingCycle', $data)) {
             $updates['billing_cycle'] = $data['billingCycle'];
         }
-        if (array_key_exists('isActive', $data)) {
+        if ($resolvedType === 'installment') {
+            if ($resolvedPaid >= $resolvedTenor) {
+                $updates['is_active'] = false;
+            } elseif (array_key_exists('isActive', $data)) {
+                $updates['is_active'] = (bool) $data['isActive'];
+            } else {
+                $updates['is_active'] = true;
+            }
+        } elseif (array_key_exists('isActive', $data)) {
             $updates['is_active'] = (bool) $data['isActive'];
         }
         if (array_key_exists('notes', $data)) {
@@ -904,6 +973,17 @@ class FinanceApiController extends Controller
         $existing = DB::table('finance_recurring_bills')->where('user_sub', $sub)->where('client_id', $id)->first();
         if (! $existing) {
             return response()->json(['error' => 'not_found', 'message' => 'Tagihan tidak ditemukan.'], 404);
+        }
+
+        $isInstallmentPaidOff = ($existing->bill_type ?? 'subscription') === 'installment'
+            && $existing->total_tenor !== null
+            && (int) $existing->paid_count >= (int) $existing->total_tenor;
+
+        if ($isInstallmentPaidOff && ! (bool) $existing->is_active) {
+            return response()->json([
+                'error' => 'already_paid_off',
+                'message' => 'Cicilan ini sudah lunas. Ubah jumlah tenor atau sudah dibayar lewat Edit jika ingin mengaktifkannya lagi.',
+            ], 422);
         }
 
         DB::table('finance_recurring_bills')->where('id', $existing->id)->update([
@@ -939,12 +1019,29 @@ class FinanceApiController extends Controller
                 return;
             }
 
+            $isInstallment = ($bill->bill_type ?? 'subscription') === 'installment';
+            $totalTenor = $bill->total_tenor !== null ? (int) $bill->total_tenor : null;
+            $paidCount = (int) ($bill->paid_count ?? 0);
+
+            if ($isInstallment && $totalTenor !== null && $paidCount >= $totalTenor) {
+                $error = ['status' => 422, 'code' => 'already_paid_off', 'message' => 'Cicilan ini sudah lunas seluruhnya.'];
+
+                return;
+            }
+
             $wallet = DB::table('finance_wallets')->where('user_sub', $sub)->where('client_id', $bill->wallet_id)->lockForUpdate()->first();
             if (! $wallet) {
                 $error = ['status' => 422, 'code' => 'wallet_not_found', 'message' => 'Dompet pembayaran untuk tagihan ini tidak ditemukan.'];
 
                 return;
             }
+
+            $newPaidCount = $isInstallment ? $paidCount + 1 : $paidCount;
+            $txNote = $isInstallment
+                ? ($totalTenor !== null
+                    ? "Bayar Cicilan ({$newPaidCount}/{$totalTenor}): {$bill->name}"
+                    : "Bayar Cicilan: {$bill->name}")
+                : 'Bayar Tagihan: '.$bill->name;
 
             $amount = (float) $bill->amount;
             DB::table('finance_wallets')->where('id', $wallet->id)->update([
@@ -961,7 +1058,7 @@ class FinanceApiController extends Controller
                 'amount' => $amount,
                 'type' => 'expense',
                 'category_id' => $bill->category_id,
-                'notes' => 'Bayar Tagihan: '.$bill->name,
+                'notes' => $txNote,
                 'tx_date' => $now->toIso8601String(),
                 'receipt_image' => null,
                 'tags' => json_encode([]),
@@ -971,10 +1068,18 @@ class FinanceApiController extends Controller
                 'updated_at' => $now,
             ]);
 
-            DB::table('finance_recurring_bills')->where('id', $bill->id)->update([
+            $billUpdates = [
                 'last_paid_date' => $now->format('Y-m-d'),
                 'updated_at' => $now,
-            ]);
+            ];
+            if ($isInstallment) {
+                $billUpdates['paid_count'] = $newPaidCount;
+                if ($totalTenor !== null && $newPaidCount >= $totalTenor) {
+                    $billUpdates['is_active'] = false;
+                }
+            }
+
+            DB::table('finance_recurring_bills')->where('id', $bill->id)->update($billUpdates);
 
             $this->vault->refreshUserMetrics($sub);
             $updatedBill = DB::table('finance_recurring_bills')->where('id', $bill->id)->first();

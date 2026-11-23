@@ -98,6 +98,20 @@
                         <span>Paket Harga & Limit Fitur</span>
                     </span>
                 </a>
+
+                <div class="pt-3 px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Server &amp; Developer
+                </div>
+
+                <a
+                    href="{{ route('admin.maintenance') }}"
+                    class="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition {{ request()->routeIs('admin.maintenance*') ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-800/50' }}"
+                >
+                    <span class="flex items-center gap-2.5">
+                        <span>🛠️</span>
+                        <span>Maintenance &amp; Debugger</span>
+                    </span>
+                </a>
             </nav>
         </div>
 
@@ -151,6 +165,12 @@
             @if (session('status'))
                 <div class="p-4 rounded-2xl bg-emerald-950/70 border border-emerald-500/40 text-emerald-200 text-xs font-bold flex items-center justify-between">
                     <span>✨ {{ session('status') }}</span>
+                </div>
+            @endif
+
+            @if (session('error'))
+                <div class="p-4 rounded-2xl bg-rose-950/70 border border-rose-500/40 text-rose-200 text-xs font-bold flex items-center justify-between">
+                    <span>⚠️ {{ session('error') }}</span>
                 </div>
             @endif
 

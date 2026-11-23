@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AdminDashboardController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\MaintenanceController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
@@ -24,4 +25,9 @@ Route::middleware('sso:finance.admin')->group(function () {
 
     Route::get('/plans', [AdminDashboardController::class, 'plans'])->name('admin.plans');
     Route::post('/plans/{key}', [AdminDashboardController::class, 'updatePlan'])->name('admin.plans.update');
+
+    // Mode Debugger & cPanel Maintenance Console
+    Route::get('/maintenance', [MaintenanceController::class, 'index'])->name('admin.maintenance');
+    Route::post('/maintenance/run', [MaintenanceController::class, 'runCommand'])->name('admin.maintenance.run');
+    Route::post('/maintenance/logs/clear', [MaintenanceController::class, 'clearLogs'])->name('admin.maintenance.logs.clear');
 });

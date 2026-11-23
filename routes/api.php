@@ -3,20 +3,13 @@
 use App\Http\Controllers\CloudSyncController;
 use App\Http\Controllers\FinanceApiController;
 use App\Http\Controllers\WebhookController;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/webhooks/iam', [WebhookController::class, 'handle'])->name('api.webhooks.iam');
 
 Route::prefix('v1')->group(function () {
-    // Global CORS preflight for all /api/v1/* REST endpoints
-    Route::options('/{any}', function (Request $request) {
-        return response('', 204, [
-            'Access-Control-Allow-Origin' => $request->header('Origin', '*'),
-            'Access-Control-Allow-Methods' => 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers' => 'Content-Type, Authorization, Accept, X-Requested-With',
-        ]);
-    })->where('any', '.*');
+    // Global CORS preflight for all /api/v1/* REST endpoints (controller-backed for route:cache support)
+    Route::options('/{any}', [FinanceApiController::class, 'corsPreflight'])->where('any', '.*');
 
     Route::get('/plan-config', [CloudSyncController::class, 'planConfig'])->name('api.plan.config');
 
