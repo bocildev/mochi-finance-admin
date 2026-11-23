@@ -750,4 +750,51 @@ class FinanceRestApiTest extends TestCase
         $this->assertStringContainsString('gemini-3.5-flash-lite', $msg);
         $this->assertStringContainsString('gemini-flash-lite-latest', $msg);
     }
+
+    public function test_admin_plan_update_accepts_indonesian_decimal_currency_format(): void
+    {
+        DB::table('finance_users')->insert([
+            'sub' => 'usr_admin_plan',
+            'name' => 'Admin Plan',
+            'email' => 'athallahrich@gmail.com',
+            'roles' => json_encode(['admin']),
+            'permissions' => json_encode(IamSsoService::ROLE_PERMISSIONS['admin']),
+            'plan_tier' => 'admin',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $adminSession = [
+            'iam_user' => [
+                'sub' => 'usr_admin_plan',
+                'name' => 'Admin Plan',
+                'email' => 'athallahrich@gmail.com',
+                'roles' => ['admin'],
+                'permissions' => IamSsoService::ROLE_PERMISSIONS['admin'],
+                'plan_tier' => 'admin',
+            ],
+        ];
+
+        $this->withSession($adminSession)
+            ->post('/plans/pro', [
+                'name' => 'Mochi Pro',
+                'badge' => 'PRO ✨',
+                'monthly_price' => '29.500,75',
+                'yearly_price' => '290.000',
+                'max_wallets' => -1,
+                'max_budgets' => -1,
+                'max_goals' => -1,
+                'allow_cloud_sync' => '1',
+                'allow_smart_inbox' => '1',
+                'allow_analytics' => '1',
+                'allow_csv_export' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        $pro = DB::table('saas_plans')->where('key', 'pro')->first();
+        $this->assertSame(29500.75, (float) $pro->monthly_price);
+        $this->assertSame(290000.0, (float) $pro->yearly_price);
+    }
 }

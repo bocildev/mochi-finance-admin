@@ -185,5 +185,85 @@
             @yield('content')
         </main>
     </div>
+
+    <script>
+        (function () {
+            function formatLiveDecimalId(raw) {
+                var str = String(raw || '').trim();
+                if (str.indexOf(',') === -1 && /^\d+\.\d{1,2}$/.test(str)) {
+                    str = str.replace('.', ',');
+                }
+                str = str.replace(/[^0-9,]/g, '');
+                var commaIdx = str.indexOf(',');
+                var intPart = commaIdx >= 0 ? str.slice(0, commaIdx) : str;
+                var decPart = commaIdx >= 0 ? str.slice(commaIdx + 1).replace(/,/g, '').slice(0, 2) : '';
+
+                if (intPart.length > 1) {
+                    intPart = intPart.replace(/^0+(?=\d)/, '');
+                }
+                if (intPart === '' && commaIdx >= 0) {
+                    intPart = '0';
+                }
+
+                var formattedInt = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+                var hasComma = commaIdx >= 0;
+                var display = intPart === '' && !hasComma ? '' : formattedInt + (hasComma ? ',' + decPart : '');
+                var numeric = (intPart === '' && decPart === '') ? '' : (intPart || '0') + (decPart !== '' ? '.' + decPart : '');
+
+                return { display: display, numeric: numeric };
+            }
+
+            function countSig(text) {
+                var c = 0;
+                for (var i = 0; i < text.length; i++) {
+                    var ch = text[i];
+                    if ((ch >= '0' && ch <= '9') || ch === ',') c++;
+                }
+                return c;
+            }
+
+            function caretForSig(formatted, target) {
+                if (target <= 0) return 0;
+                var seen = 0;
+                for (var i = 0; i < formatted.length; i++) {
+                    var ch = formatted[i];
+                    if ((ch >= '0' && ch <= '9') || ch === ',') {
+                        seen++;
+                        if (seen >= target) return i + 1;
+                    }
+                }
+                return formatted.length;
+            }
+
+            document.querySelectorAll('input[data-decimal-currency]').forEach(function (displayEl) {
+                var targetName = displayEl.getAttribute('data-decimal-currency');
+                var form = displayEl.closest('form');
+                var hiddenEl = form ? form.querySelector('input[type="hidden"][name="' + targetName + '"]') : null;
+
+                var sync = function (preserveCursor) {
+                    var cursor = displayEl.selectionStart || 0;
+                    var sigBefore = countSig(displayEl.value.slice(0, cursor));
+                    var res = formatLiveDecimalId(displayEl.value);
+                    displayEl.value = res.display;
+                    if (hiddenEl) {
+                        hiddenEl.value = res.numeric;
+                    }
+                    if (preserveCursor) {
+                        var pos = caretForSig(res.display, sigBefore);
+                        try { displayEl.setSelectionRange(pos, pos); } catch (e) {}
+                    }
+                };
+
+                sync(false);
+                displayEl.addEventListener('input', function () { sync(true); });
+                displayEl.addEventListener('blur', function () {
+                    if (displayEl.value.endsWith(',')) {
+                        displayEl.value = displayEl.value.slice(0, -1);
+                        sync(false);
+                    }
+                });
+            });
+        })();
+    </script>
 </body>
 </html>

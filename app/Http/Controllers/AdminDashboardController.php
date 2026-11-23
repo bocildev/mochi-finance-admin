@@ -301,8 +301,36 @@ class AdminDashboardController extends Controller
         ]));
     }
 
+    private function parseIndonesianNumber(mixed $value): mixed
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        $trimmed = str_replace(['Rp', 'rp', ' '], '', trim($value));
+        if ($trimmed === '') {
+            return $trimmed;
+        }
+
+        if (str_contains($trimmed, ',')) {
+            return str_replace(',', '.', str_replace('.', '', $trimmed));
+        }
+
+        $dotCount = substr_count($trimmed, '.');
+        if ($dotCount > 1 || preg_match('/^-?\d+\.\d{3}$/', $trimmed)) {
+            return str_replace('.', '', $trimmed);
+        }
+
+        return $trimmed;
+    }
+
     public function updatePlan(Request $request, string $key)
     {
+        $request->merge([
+            'monthly_price' => $this->parseIndonesianNumber($request->input('monthly_price')),
+            'yearly_price' => $this->parseIndonesianNumber($request->input('yearly_price')),
+        ]);
+
         $data = $request->validate([
             'name' => 'required|string|max:100',
             'badge' => 'required|string|max:64',

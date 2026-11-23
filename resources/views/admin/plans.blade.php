@@ -18,8 +18,11 @@
                     </div>
                     <div class="text-right">
                         <div class="text-xs text-slate-400">Harga Bulanan</div>
+                        @php
+                            $hasDec = fmod((float) $plan->monthly_price, 1.0) > 0.001;
+                        @endphp
                         <div class="text-xl font-extrabold {{ $plan->key === 'pro' ? 'text-pink-400' : 'text-slate-200' }}">
-                            Rp {{ number_format((float) $plan->monthly_price, 0, ',', '.') }}
+                            Rp {{ number_format((float) $plan->monthly_price, $hasDec ? 2 : 0, ',', '.') }}
                         </div>
                     </div>
                 </div>
@@ -35,14 +38,23 @@
                     </div>
                 </div>
 
+                @php
+                    $monthlyRaw = (float) $plan->monthly_price;
+                    $yearlyRaw = (float) $plan->yearly_price;
+                    $monthlyFormatted = rtrim(rtrim(number_format($monthlyRaw, 2, ',', '.'), '0'), ',');
+                    $yearlyFormatted = rtrim(rtrim(number_format($yearlyRaw, 2, ',', '.'), '0'), ',');
+                @endphp
+
                 <div class="grid grid-cols-2 gap-4 text-xs">
                     <div>
                         <label class="block text-slate-400 mb-1 font-semibold">Harga Bulanan (Rp)</label>
-                        <input type="number" name="monthly_price" value="{{ (int) $plan->monthly_price }}" required class="w-full bg-[#0d0b14] border border-slate-700 rounded-xl px-3 py-2 text-white">
+                        <input type="hidden" name="monthly_price" value="{{ $monthlyRaw }}">
+                        <input type="text" inputmode="decimal" data-decimal-currency="monthly_price" value="{{ $monthlyFormatted }}" required placeholder="Contoh: 29.000" class="w-full bg-[#0d0b14] border border-slate-700 rounded-xl px-3 py-2 text-white font-bold">
                     </div>
                     <div>
                         <label class="block text-slate-400 mb-1 font-semibold">Harga Tahunan (Rp)</label>
-                        <input type="number" name="yearly_price" value="{{ (int) $plan->yearly_price }}" required class="w-full bg-[#0d0b14] border border-slate-700 rounded-xl px-3 py-2 text-white">
+                        <input type="hidden" name="yearly_price" value="{{ $yearlyRaw }}">
+                        <input type="text" inputmode="decimal" data-decimal-currency="yearly_price" value="{{ $yearlyFormatted }}" required placeholder="Contoh: 290.000" class="w-full bg-[#0d0b14] border border-slate-700 rounded-xl px-3 py-2 text-white font-bold">
                     </div>
                 </div>
 
