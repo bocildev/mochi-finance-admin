@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\FinanceVaultService;
 use App\Services\IamSsoService;
 use Carbon\Carbon;
 use Iam\Client\Claims;
@@ -10,7 +11,10 @@ use Illuminate\Support\Facades\DB;
 
 class CloudSyncController extends Controller
 {
-    public function __construct(private IamSsoService $sso) {}
+    public function __construct(
+        private IamSsoService $sso,
+        private FinanceVaultService $vault
+    ) {}
 
     public function planConfig(Request $request)
     {
@@ -141,322 +145,18 @@ class CloudSyncController extends Controller
         $userRow = $request->attributes->get('iam_user');
         $sub = $claims->sub;
 
-        // Auto-heal / remap jika ada data dari sub lama (misal: perbedaan 60bc... vs 69bc... dari seeder/hosting)
+        // Auto-remap jika ada data lama milik owner dari sub sebelumnya (tanpa auto-seed dummy)
         if ($userRow && in_array(strtolower($userRow->email ?? ''), ['athallahrich@gmail.com', 'admin@iam-sso.local'], true)) {
-            DB::table('finance_wallets')
-                ->where('user_sub', '!=', $sub)
-                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
-                ->update(['user_sub' => $sub]);
-
-            DB::table('finance_transactions')
-                ->where('user_sub', '!=', $sub)
-                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
-                ->update(['user_sub' => $sub]);
-
-            DB::table('finance_categories')
-                ->where('user_sub', '!=', $sub)
-                ->whereIn('user_sub', ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'])
-                ->update(['user_sub' => $sub]);
-
-            // Jika akun owner sama sekali belum memiliki dompet fisik di cloud, sediakan 3 dompet resmi bawaan
-            $existingWalletsCount = DB::table('finance_wallets')->where('user_sub', $sub)->count();
-            if ($existingWalletsCount === 0) {
-                $now = Carbon::now();
-                $nowMs = (int) round(microtime(true) * 1000);
-                DB::table('finance_wallets')->insert([
-                    [
-                        'user_sub' => $sub,
-                        'client_id' => 'wallet-bca',
-                        'name' => 'BCA Utama',
-                        'type' => 'bank',
-                        'balance' => 7500000.00,
-                        'account_number' => '8210-xxxx-xx',
-                        'icon' => null,
-                        'color' => '#005baa',
-                        'created_ms' => $nowMs,
-                        'updated_ms' => $nowMs,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ],
-                    [
-                        'user_sub' => $sub,
-                        'client_id' => 'wallet-gopay',
-                        'name' => 'GoPay',
-                        'type' => 'ewallet',
-                        'balance' => 350000.00,
-                        'account_number' => null,
-                        'icon' => null,
-                        'color' => '#00aed6',
-                        'created_ms' => $nowMs,
-                        'updated_ms' => $nowMs,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ],
-                    [
-                        'user_sub' => $sub,
-                        'client_id' => 'wallet-cash',
-                        'name' => 'Uang Tunai (Dompet)',
-                        'type' => 'cash',
-                        'balance' => 450000.00,
-                        'account_number' => null,
-                        'icon' => null,
-                        'color' => '#10b981',
-                        'created_ms' => $nowMs,
-                        'updated_ms' => $nowMs,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ],
-                ]);
-
-                if (DB::table('finance_transactions')->where('user_sub', $sub)->count() === 0) {
-                    DB::table('finance_transactions')->insert([
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-1',
-                            'wallet_id' => 'wallet-bca',
-                            'target_wallet_id' => null,
-                            'amount' => 8500000.00,
-                            'type' => 'income',
-                            'category_id' => 'cat-salary',
-                            'notes' => 'Gaji Bulanan PT Digital Mandiri',
-                            'tx_date' => Carbon::now()->subDays(5)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - (86400000 * 5),
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-2',
-                            'wallet_id' => 'wallet-bca',
-                            'target_wallet_id' => null,
-                            'amount' => 1150000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-food',
-                            'notes' => 'Belanja Mingguan & Kopi Mochi',
-                            'tx_date' => Carbon::now()->subDays(4)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - (86400000 * 4),
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-3',
-                            'wallet_id' => 'wallet-bca',
-                            'target_wallet_id' => null,
-                            'amount' => 1150000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-food',
-                            'notes' => 'Belanja Mingguan Supermarket & Makan Bersama',
-                            'tx_date' => Carbon::now()->subDays(3)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - (86400000 * 3),
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-4',
-                            'wallet_id' => 'wallet-gopay',
-                            'target_wallet_id' => null,
-                            'amount' => 320000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-transport',
-                            'notes' => 'Bensin Shell & Top up Saldo Tol',
-                            'tx_date' => Carbon::now()->subDays(2)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - (86400000 * 2),
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-5',
-                            'wallet_id' => 'wallet-bca',
-                            'target_wallet_id' => null,
-                            'amount' => 450000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-bills',
-                            'notes' => 'Listrik PLN Bulanan',
-                            'tx_date' => Carbon::now()->subDays(2)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - (86400000 * 2),
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-6',
-                            'wallet_id' => 'wallet-gopay',
-                            'target_wallet_id' => null,
-                            'amount' => 186000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-entertainment',
-                            'notes' => 'Netflix Premium Langganan',
-                            'tx_date' => Carbon::now()->subDays(1)->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs - 86400000,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                        [
-                            'user_sub' => $sub,
-                            'client_id' => 'tx-seed-7',
-                            'wallet_id' => 'wallet-cash',
-                            'target_wallet_id' => null,
-                            'amount' => 65000.00,
-                            'type' => 'expense',
-                            'category_id' => 'cat-food',
-                            'notes' => 'Kopi Susu Gula Aren & Kue Mochi 🍡',
-                            'tx_date' => Carbon::now()->toIso8601String(),
-                            'receipt_image' => null,
-                            'tags' => '[]',
-                            'inbox_ref_id' => null,
-                            'created_ms' => $nowMs,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                    ]);
-                }
+            $legacySubs = ['60bc11d8-480f-44f5-8640-fc6cce386536', 'usr_owner_athallahrich', 'usr_super_admin'];
+            foreach (['finance_wallets', 'finance_transactions', 'finance_categories', 'finance_budgets', 'finance_saving_goals', 'finance_recurring_bills', 'finance_inbox_items'] as $table) {
+                DB::table($table)
+                    ->where('user_sub', '!=', $sub)
+                    ->whereIn('user_sub', $legacySubs)
+                    ->update(['user_sub' => $sub]);
             }
         }
 
-        $wallets = DB::table('finance_wallets')
-            ->where('user_sub', $sub)
-            ->orderBy('id')
-            ->get()
-            ->map(fn ($w) => [
-                'id' => $w->client_id,
-                'name' => $w->name,
-                'type' => $w->type,
-                'balance' => (float) $w->balance,
-                'accountNumber' => $w->account_number,
-                'icon' => $w->icon,
-                'color' => $w->color,
-                'createdAt' => (int) $w->created_ms,
-                'updatedAt' => (int) $w->updated_ms,
-            ])->values();
-
-        $categories = DB::table('finance_categories')
-            ->where('user_sub', $sub)
-            ->orderBy('id')
-            ->get()
-            ->map(fn ($c) => [
-                'id' => $c->client_id,
-                'name' => $c->name,
-                'type' => $c->type,
-                'icon' => $c->icon ?: 'Receipt',
-                'color' => $c->color ?: '#f472b6',
-            ])->values();
-
-        $transactions = DB::table('finance_transactions')
-            ->where('user_sub', $sub)
-            ->orderByDesc('created_ms')
-            ->get()
-            ->map(fn ($t) => [
-                'id' => $t->client_id,
-                'walletId' => $t->wallet_id,
-                'targetWalletId' => $t->target_wallet_id,
-                'amount' => (float) $t->amount,
-                'type' => $t->type,
-                'categoryId' => $t->category_id,
-                'notes' => (string) ($t->notes ?? ''),
-                'date' => $t->tx_date,
-                'receiptImage' => $t->receipt_image,
-                'tags' => json_decode($t->tags ?: '[]', true) ?: [],
-                'inboxRefId' => $t->inbox_ref_id,
-                'createdAt' => (int) $t->created_ms,
-            ])->values();
-
-        $budgets = DB::table('finance_budgets')
-            ->where('user_sub', $sub)
-            ->get()
-            ->map(fn ($b) => [
-                'id' => $b->client_id,
-                'categoryId' => $b->category_id,
-                'monthlyLimit' => (float) $b->monthly_limit,
-                'month' => $b->month,
-            ])->values();
-
-        $savingGoals = DB::table('finance_saving_goals')
-            ->where('user_sub', $sub)
-            ->get()
-            ->map(fn ($g) => [
-                'id' => $g->client_id,
-                'name' => $g->name,
-                'targetAmount' => (float) $g->target_amount,
-                'currentAmount' => (float) $g->current_amount,
-                'targetDate' => $g->target_date,
-                'icon' => $g->icon,
-                'color' => $g->color,
-                'notes' => $g->notes,
-                'createdAt' => (int) $g->created_ms,
-            ])->values();
-
-        $recurringBills = DB::table('finance_recurring_bills')
-            ->where('user_sub', $sub)
-            ->get()
-            ->map(fn ($r) => [
-                'id' => $r->client_id,
-                'name' => $r->name,
-                'amount' => (float) $r->amount,
-                'categoryId' => $r->category_id,
-                'walletId' => $r->wallet_id,
-                'dueDay' => (int) $r->due_day,
-                'billingCycle' => $r->billing_cycle,
-                'isActive' => (bool) $r->is_active,
-                'notes' => $r->notes,
-                'lastPaidDate' => $r->last_paid_date,
-                'createdAt' => (int) $r->created_ms,
-            ])->values();
-
-        $inbox = DB::table('finance_inbox_items')
-            ->where('user_sub', $sub)
-            ->orderByDesc('created_ms')
-            ->get()
-            ->map(fn ($i) => [
-                'id' => $i->client_id,
-                'source' => $i->source,
-                'rawMessage' => $i->raw_message,
-                'detectedAmount' => (float) $i->detected_amount,
-                'detectedType' => $i->detected_type,
-                'detectedMerchant' => $i->detected_merchant,
-                'detectedDate' => $i->detected_date,
-                'suggestedWalletId' => $i->suggested_wallet_id,
-                'suggestedCategoryId' => $i->suggested_category_id,
-                'status' => $i->status,
-                'notes' => $i->notes,
-                'createdAt' => (int) $i->created_ms,
-            ])->values();
-
-        $userRow = $request->attributes->get('iam_user');
-        $isFree = ($userRow->plan_tier ?? 'free') === 'free';
-
-        return response()->json([
-            'sub' => $sub,
-            'plan_tier' => $userRow->plan_tier ?? 'free',
-            'syncedAt' => Carbon::now()->toIso8601String(),
-            'wallets' => $isFree ? $wallets->take(2)->values() : $wallets,
-            'categories' => $categories,
-            'transactions' => $transactions,
-            'budgets' => $isFree ? [] : $budgets,
-            'savingGoals' => $isFree ? [] : $savingGoals,
-            'recurringBills' => $isFree ? [] : $recurringBills,
-            'inbox' => $isFree ? [] : $inbox,
-        ]);
+        return response()->json($this->vault->getVaultSnapshot($sub, $userRow));
     }
 
     public function push(Request $request)
@@ -468,181 +168,221 @@ class CloudSyncController extends Controller
         $now = Carbon::now();
         $nowMs = (int) round(microtime(true) * 1000);
 
-        $isFree = ($userRow->plan_tier ?? 'free') === 'free';
-        $createdAt = $userRow->created_at ? Carbon::parse($userRow->created_at) : $now;
-        $trialExpiresAt = $createdAt->copy()->addDays(14);
-        $isTrialExpired = $isFree && $now->greaterThan($trialExpiresAt);
+        $isFree = $this->vault->isFree($userRow);
+        $isTrialExpired = $this->vault->isTrialExpired($userRow);
+        $maxWallets = $this->vault->maxWalletsForUser($userRow);
 
-        DB::transaction(function () use ($request, $sub, $now, $nowMs, $isFree, $isTrialExpired) {
-            // Free Starter: maksimal simpan 2 dompet
-            $walletsInput = (array) $request->input('wallets', []);
-            if ($isFree) {
-                $walletsInput = array_slice($walletsInput, 0, 2);
-            }
-
-            foreach ($walletsInput as $w) {
-                if (empty($w['id'])) {
-                    continue;
+        DB::transaction(function () use ($request, $sub, $now, $nowMs, $isFree, $isTrialExpired, $maxWallets) {
+            if ($request->has('wallets')) {
+                $walletsInput = (array) $request->input('wallets', []);
+                if ($isFree && $maxWallets > 0) {
+                    $walletsInput = array_slice($walletsInput, 0, $maxWallets);
                 }
-                DB::table('finance_wallets')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $w['id']],
-                    [
-                        'name' => (string) ($w['name'] ?? 'Dompet'),
-                        'type' => (string) ($w['type'] ?? 'bank'),
-                        'balance' => (float) ($w['balance'] ?? 0),
-                        'account_number' => $w['accountNumber'] ?? null,
-                        'icon' => $w['icon'] ?? null,
-                        'color' => $w['color'] ?? '#f472b6',
-                        'created_ms' => (int) ($w['createdAt'] ?? $nowMs),
-                        'updated_ms' => (int) ($w['updatedAt'] ?? $nowMs),
-                        'updated_at' => $now,
-                    ]
-                );
-            }
 
-            foreach ((array) $request->input('categories', []) as $c) {
-                if (empty($c['id'])) {
-                    continue;
+                $walletIds = [];
+                foreach ($walletsInput as $w) {
+                    if (empty($w['id'])) {
+                        continue;
+                    }
+                    $cid = (string) $w['id'];
+                    $walletIds[] = $cid;
+                    DB::table('finance_wallets')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => $cid],
+                        [
+                            'name' => (string) ($w['name'] ?? 'Dompet'),
+                            'type' => (string) ($w['type'] ?? 'bank'),
+                            'balance' => (float) ($w['balance'] ?? 0),
+                            'account_number' => $w['accountNumber'] ?? null,
+                            'icon' => $w['icon'] ?? null,
+                            'color' => $w['color'] ?? '#f472b6',
+                            'created_ms' => (int) ($w['createdAt'] ?? $nowMs),
+                            'updated_ms' => (int) ($w['updatedAt'] ?? $nowMs),
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_categories')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $c['id']],
-                    [
-                        'name' => (string) ($c['name'] ?? 'Kategori'),
-                        'type' => (string) ($c['type'] ?? 'expense'),
-                        'icon' => $c['icon'] ?? 'Receipt',
-                        'color' => $c['color'] ?? '#f472b6',
-                        'updated_at' => $now,
-                    ]
-                );
+                DB::table('finance_wallets')
+                    ->where('user_sub', $sub)
+                    ->when(! empty($walletIds), fn ($q) => $q->whereNotIn('client_id', $walletIds))
+                    ->delete();
             }
 
-            // Transaksi: jika trial telah habis pada user Free, tolak penambahan transaksi baru
-            $txInput = (array) $request->input('transactions', []);
-            if ($isTrialExpired) {
-                // Hanya boleh sinkronisasi update transaksi yang sudah ada sebelumnya
-                $existingTxIds = DB::table('finance_transactions')->where('user_sub', $sub)->pluck('client_id')->all();
-                $txInput = array_filter($txInput, fn ($t) => in_array((string) ($t['id'] ?? ''), $existingTxIds, true));
-            }
-
-            foreach ($txInput as $t) {
-                if (empty($t['id'])) {
-                    continue;
+            if ($request->has('categories')) {
+                foreach ((array) $request->input('categories', []) as $c) {
+                    if (empty($c['id'])) {
+                        continue;
+                    }
+                    DB::table('finance_categories')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => (string) $c['id']],
+                        [
+                            'name' => (string) ($c['name'] ?? 'Kategori'),
+                            'type' => (string) ($c['type'] ?? 'expense'),
+                            'icon' => $c['icon'] ?? 'Receipt',
+                            'color' => $c['color'] ?? '#f472b6',
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
-                DB::table('finance_transactions')->updateOrInsert(
-                    ['user_sub' => $sub, 'client_id' => (string) $t['id']],
-                    [
-                        'wallet_id' => (string) ($t['walletId'] ?? 'wallet-bca'),
-                        'target_wallet_id' => $t['targetWalletId'] ?? null,
-                        'amount' => (float) ($t['amount'] ?? 0),
-                        'type' => (string) ($t['type'] ?? 'expense'),
-                        'category_id' => (string) ($t['categoryId'] ?? 'cat-food'),
-                        'notes' => $t['notes'] ?? '',
-                        'tx_date' => (string) ($t['date'] ?? $now->toIso8601String()),
-                        'receipt_image' => $t['receiptImage'] ?? null,
-                        'tags' => isset($t['tags']) ? json_encode($t['tags']) : null,
-                        'inbox_ref_id' => $t['inboxRefId'] ?? null,
-                        'created_ms' => (int) ($t['createdAt'] ?? $nowMs),
-                        'updated_at' => $now,
-                    ]
-                );
+            }
+
+            if ($request->has('transactions')) {
+                $txInput = (array) $request->input('transactions', []);
+                if ($isTrialExpired) {
+                    $existingTxIds = DB::table('finance_transactions')->where('user_sub', $sub)->pluck('client_id')->all();
+                    $txInput = array_filter($txInput, fn ($t) => in_array((string) ($t['id'] ?? ''), $existingTxIds, true));
+                }
+
+                $txIds = [];
+                foreach ($txInput as $t) {
+                    if (empty($t['id'])) {
+                        continue;
+                    }
+                    $cid = (string) $t['id'];
+                    $txIds[] = $cid;
+                    DB::table('finance_transactions')->updateOrInsert(
+                        ['user_sub' => $sub, 'client_id' => $cid],
+                        [
+                            'wallet_id' => (string) ($t['walletId'] ?? ''),
+                            'target_wallet_id' => $t['targetWalletId'] ?? null,
+                            'amount' => (float) ($t['amount'] ?? 0),
+                            'type' => (string) ($t['type'] ?? 'expense'),
+                            'category_id' => (string) ($t['categoryId'] ?? 'cat-food'),
+                            'notes' => $t['notes'] ?? '',
+                            'tx_date' => (string) ($t['date'] ?? $now->toIso8601String()),
+                            'receipt_image' => $t['receiptImage'] ?? null,
+                            'tags' => isset($t['tags']) ? json_encode($t['tags']) : null,
+                            'inbox_ref_id' => $t['inboxRefId'] ?? null,
+                            'created_ms' => (int) ($t['createdAt'] ?? $nowMs),
+                            'updated_at' => $now,
+                        ]
+                    );
+                }
+                DB::table('finance_transactions')
+                    ->where('user_sub', $sub)
+                    ->when(! empty($txIds), fn ($q) => $q->whereNotIn('client_id', $txIds))
+                    ->delete();
             }
 
             // Fitur Khusus Pro: Anggaran, Celengan Impian, Tagihan Rutin, Smart Inbox
             if (! $isFree) {
-                foreach ((array) $request->input('budgets', []) as $b) {
-                    if (empty($b['id'])) {
-                        continue;
+                if ($request->has('budgets')) {
+                    $budgetIds = [];
+                    foreach ((array) $request->input('budgets', []) as $b) {
+                        if (empty($b['id'])) {
+                            continue;
+                        }
+                        $cid = (string) $b['id'];
+                        $budgetIds[] = $cid;
+                        DB::table('finance_budgets')->updateOrInsert(
+                            ['user_sub' => $sub, 'client_id' => $cid],
+                            [
+                                'category_id' => (string) ($b['categoryId'] ?? 'cat-food'),
+                                'monthly_limit' => (float) ($b['monthlyLimit'] ?? 0),
+                                'month' => (string) ($b['month'] ?? $now->format('Y-m')),
+                                'updated_at' => $now,
+                            ]
+                        );
                     }
-                    DB::table('finance_budgets')->updateOrInsert(
-                        ['user_sub' => $sub, 'client_id' => (string) $b['id']],
-                        [
-                            'category_id' => (string) ($b['categoryId'] ?? 'cat-food'),
-                            'monthly_limit' => (float) ($b['monthlyLimit'] ?? 0),
-                            'month' => (string) ($b['month'] ?? $now->format('Y-m')),
-                            'updated_at' => $now,
-                        ]
-                    );
+                    DB::table('finance_budgets')
+                        ->where('user_sub', $sub)
+                        ->when(! empty($budgetIds), fn ($q) => $q->whereNotIn('client_id', $budgetIds))
+                        ->delete();
                 }
 
-                foreach ((array) $request->input('savingGoals', []) as $g) {
-                    if (empty($g['id'])) {
-                        continue;
+                if ($request->has('savingGoals')) {
+                    $goalIds = [];
+                    foreach ((array) $request->input('savingGoals', []) as $g) {
+                        if (empty($g['id'])) {
+                            continue;
+                        }
+                        $cid = (string) $g['id'];
+                        $goalIds[] = $cid;
+                        DB::table('finance_saving_goals')->updateOrInsert(
+                            ['user_sub' => $sub, 'client_id' => $cid],
+                            [
+                                'name' => (string) ($g['name'] ?? 'Goal'),
+                                'target_amount' => (float) ($g['targetAmount'] ?? 0),
+                                'current_amount' => (float) ($g['currentAmount'] ?? 0),
+                                'target_date' => $g['targetDate'] ?? null,
+                                'icon' => $g['icon'] ?? 'Shield',
+                                'color' => $g['color'] ?? '#10b981',
+                                'notes' => $g['notes'] ?? null,
+                                'created_ms' => (int) ($g['createdAt'] ?? $nowMs),
+                                'updated_at' => $now,
+                            ]
+                        );
                     }
-                    DB::table('finance_saving_goals')->updateOrInsert(
-                        ['user_sub' => $sub, 'client_id' => (string) $g['id']],
-                        [
-                            'name' => (string) ($g['name'] ?? 'Goal'),
-                            'target_amount' => (float) ($g['targetAmount'] ?? 0),
-                            'current_amount' => (float) ($g['currentAmount'] ?? 0),
-                            'target_date' => $g['targetDate'] ?? null,
-                            'icon' => $g['icon'] ?? 'Shield',
-                            'color' => $g['color'] ?? '#10b981',
-                            'notes' => $g['notes'] ?? null,
-                            'created_ms' => (int) ($g['createdAt'] ?? $nowMs),
-                            'updated_at' => $now,
-                        ]
-                    );
+                    DB::table('finance_saving_goals')
+                        ->where('user_sub', $sub)
+                        ->when(! empty($goalIds), fn ($q) => $q->whereNotIn('client_id', $goalIds))
+                        ->delete();
                 }
 
-                foreach ((array) $request->input('recurringBills', []) as $r) {
-                    if (empty($r['id'])) {
-                        continue;
+                if ($request->has('recurringBills')) {
+                    $billIds = [];
+                    foreach ((array) $request->input('recurringBills', []) as $r) {
+                        if (empty($r['id'])) {
+                            continue;
+                        }
+                        $cid = (string) $r['id'];
+                        $billIds[] = $cid;
+                        DB::table('finance_recurring_bills')->updateOrInsert(
+                            ['user_sub' => $sub, 'client_id' => $cid],
+                            [
+                                'name' => (string) ($r['name'] ?? 'Tagihan'),
+                                'amount' => (float) ($r['amount'] ?? 0),
+                                'category_id' => (string) ($r['categoryId'] ?? 'cat-bills'),
+                                'wallet_id' => (string) ($r['walletId'] ?? ''),
+                                'due_day' => (int) ($r['dueDay'] ?? 1),
+                                'billing_cycle' => (string) ($r['billingCycle'] ?? 'monthly'),
+                                'is_active' => (bool) ($r['isActive'] ?? true),
+                                'notes' => $r['notes'] ?? null,
+                                'last_paid_date' => $r['lastPaidDate'] ?? null,
+                                'created_ms' => (int) ($r['createdAt'] ?? $nowMs),
+                                'updated_at' => $now,
+                            ]
+                        );
                     }
-                    DB::table('finance_recurring_bills')->updateOrInsert(
-                        ['user_sub' => $sub, 'client_id' => (string) $r['id']],
-                        [
-                            'name' => (string) ($r['name'] ?? 'Tagihan'),
-                            'amount' => (float) ($r['amount'] ?? 0),
-                            'category_id' => (string) ($r['categoryId'] ?? 'cat-bills'),
-                            'wallet_id' => (string) ($r['walletId'] ?? 'wallet-bca'),
-                            'due_day' => (int) ($r['dueDay'] ?? 1),
-                            'billing_cycle' => (string) ($r['billingCycle'] ?? 'monthly'),
-                            'is_active' => (bool) ($r['isActive'] ?? true),
-                            'notes' => $r['notes'] ?? null,
-                            'last_paid_date' => $r['lastPaidDate'] ?? null,
-                            'created_ms' => (int) ($r['createdAt'] ?? $nowMs),
-                            'updated_at' => $now,
-                        ]
-                    );
+                    DB::table('finance_recurring_bills')
+                        ->where('user_sub', $sub)
+                        ->when(! empty($billIds), fn ($q) => $q->whereNotIn('client_id', $billIds))
+                        ->delete();
                 }
 
-                foreach ((array) $request->input('inbox', []) as $i) {
-                    if (empty($i['id'])) {
-                        continue;
+                if ($request->has('inbox')) {
+                    $inboxIds = [];
+                    foreach ((array) $request->input('inbox', []) as $i) {
+                        if (empty($i['id'])) {
+                            continue;
+                        }
+                        $cid = (string) $i['id'];
+                        $inboxIds[] = $cid;
+                        DB::table('finance_inbox_items')->updateOrInsert(
+                            ['user_sub' => $sub, 'client_id' => $cid],
+                            [
+                                'source' => (string) ($i['source'] ?? 'MANUAL'),
+                                'raw_message' => (string) ($i['rawMessage'] ?? ''),
+                                'detected_amount' => (float) ($i['detectedAmount'] ?? 0),
+                                'detected_type' => (string) ($i['detectedType'] ?? 'expense'),
+                                'detected_merchant' => $i['detectedMerchant'] ?? null,
+                                'detected_date' => (string) ($i['detectedDate'] ?? $now->toIso8601String()),
+                                'suggested_wallet_id' => $i['suggestedWalletId'] ?? null,
+                                'suggested_category_id' => $i['suggestedCategoryId'] ?? null,
+                                'status' => (string) ($i['status'] ?? 'PENDING'),
+                                'notes' => $i['notes'] ?? null,
+                                'created_ms' => (int) ($i['createdAt'] ?? $nowMs),
+                                'updated_at' => $now,
+                            ]
+                        );
                     }
-                    DB::table('finance_inbox_items')->updateOrInsert(
-                        ['user_sub' => $sub, 'client_id' => (string) $i['id']],
-                        [
-                            'source' => (string) ($i['source'] ?? 'MANUAL'),
-                            'raw_message' => (string) ($i['rawMessage'] ?? ''),
-                            'detected_amount' => (float) ($i['detectedAmount'] ?? 0),
-                            'detected_type' => (string) ($i['detectedType'] ?? 'expense'),
-                            'detected_merchant' => $i['detectedMerchant'] ?? null,
-                            'detected_date' => (string) ($i['detectedDate'] ?? $now->toIso8601String()),
-                            'suggested_wallet_id' => $i['suggestedWalletId'] ?? null,
-                            'suggested_category_id' => $i['suggestedCategoryId'] ?? null,
-                            'status' => (string) ($i['status'] ?? 'PENDING'),
-                            'notes' => $i['notes'] ?? null,
-                            'created_ms' => (int) ($i['createdAt'] ?? $nowMs),
-                            'updated_at' => $now,
-                        ]
-                    );
+                    DB::table('finance_inbox_items')
+                        ->where('user_sub', $sub)
+                        ->when(! empty($inboxIds), fn ($q) => $q->whereNotIn('client_id', $inboxIds))
+                        ->delete();
                 }
             }
 
-            $walletsCount = DB::table('finance_wallets')->where('user_sub', $sub)->count();
-            $txCount = DB::table('finance_transactions')->where('user_sub', $sub)->count();
-            $budgetsCount = DB::table('finance_budgets')->where('user_sub', $sub)->count();
-            $goalsCount = DB::table('finance_saving_goals')->where('user_sub', $sub)->count();
-
-            DB::table('finance_users')->where('sub', $sub)->update([
-                'wallets_count' => $walletsCount,
-                'transactions_count' => $txCount,
-                'budgets_count' => $budgetsCount,
-                'goals_count' => $goalsCount,
-                'last_sync_at' => $now,
-                'updated_at' => $now,
-            ]);
+            $this->vault->refreshUserMetrics($sub);
         });
 
         return response()->json([

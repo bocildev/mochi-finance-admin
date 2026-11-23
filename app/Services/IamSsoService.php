@@ -62,14 +62,19 @@ class IamSsoService
         });
     }
 
-    public function isSessionActiveInIam(?string $accessToken): bool
+    /**
+     * Check active session with IAM Core and return userinfo profile in one call.
+     *
+     * @return array<string, mixed>|false Returns false if session is revoked (401); array (possibly empty on timeout/tests) if active.
+     */
+    public function fetchLiveUserInfo(?string $accessToken): array|false
     {
         if (! $accessToken) {
             return false;
         }
 
         if (app()->runningUnitTests()) {
-            return true;
+            return [];
         }
 
         try {
@@ -82,12 +87,21 @@ class IamSsoService
                 return false;
             }
 
-            return true;
+            if ($res->successful() && is_array($res->json())) {
+                return $res->json();
+            }
+
+            return [];
         } catch (\Throwable) {
             // Jika terjadi network timeout / error loopback antar domain cPanel,
             // jangan gagalkan sesi karena signature kriptografis RS256 token sudah divalidasi
-            return true;
+            return [];
         }
+    }
+
+    public function isSessionActiveInIam(?string $accessToken): bool
+    {
+        return $this->fetchLiveUserInfo($accessToken) !== false;
     }
 
     public function verifyAccessToken(string $jwt): Claims

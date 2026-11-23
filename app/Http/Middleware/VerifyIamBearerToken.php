@@ -15,7 +15,7 @@ class VerifyIamBearerToken
     {
         $corsHeaders = [
             'Access-Control-Allow-Origin' => $request->header('Origin', '*'),
-            'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Methods' => 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
             'Access-Control-Allow-Headers' => 'Content-Type, Authorization, Accept, X-Requested-With',
         ];
 
@@ -40,14 +40,19 @@ class VerifyIamBearerToken
             ], 401, $corsHeaders);
         }
 
-        if (! $this->sso->isSessionActiveInIam($token)) {
+        $liveUserInfo = $this->sso->fetchLiveUserInfo($token);
+        if ($liveUserInfo === false) {
             return response()->json([
                 'error' => 'session_revoked',
                 'message' => 'Sesi aplikasi ini telah dicabut atau sesi SSO Anda telah berakhir.',
             ], 401, $corsHeaders);
         }
 
-        $userRow = $this->sso->syncFinanceUser($claims);
+        $userRow = $this->sso->syncFinanceUser(
+            $claims,
+            isset($liveUserInfo['name']) ? (string) $liveUserInfo['name'] : null,
+            isset($liveUserInfo['email']) ? (string) $liveUserInfo['email'] : null
+        );
         if ($userRow->status !== 'active') {
             return response()->json([
                 'error' => 'user_disabled',
