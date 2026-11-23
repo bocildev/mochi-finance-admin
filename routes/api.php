@@ -34,8 +34,14 @@ Route::prefix('v1')->group(function () {
 
         // Budgets CRUD (Pro)
         Route::post('/budgets', [FinanceApiController::class, 'storeBudget'])->name('api.budgets.store');
+        Route::post('/budgets/batch', [FinanceApiController::class, 'batchStoreBudgets'])->name('api.budgets.batch');
         Route::put('/budgets/{id}', [FinanceApiController::class, 'updateBudget'])->name('api.budgets.update');
         Route::delete('/budgets/{id}', [FinanceApiController::class, 'destroyBudget'])->name('api.budgets.destroy');
+
+        // Monthly Salary Plans & Google Gemini AI Analysis (Pro)
+        Route::get('/monthly-plans', [FinanceApiController::class, 'listMonthlyPlans'])->name('api.monthly-plans.index');
+        Route::put('/monthly-plans/{month}', [FinanceApiController::class, 'upsertMonthlyPlan'])->name('api.monthly-plans.upsert');
+        Route::post('/monthly-plans/{month}/analyze', [FinanceApiController::class, 'analyzeMonthlyPlan'])->name('api.monthly-plans.analyze');
 
         // Saving Goals CRUD + Deposit / Withdraw (Pro)
         Route::post('/saving-goals', [FinanceApiController::class, 'storeSavingGoal'])->name('api.goals.store');

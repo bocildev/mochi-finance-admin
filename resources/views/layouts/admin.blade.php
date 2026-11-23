@@ -112,6 +112,16 @@
                         <span>Maintenance &amp; Debugger</span>
                     </span>
                 </a>
+
+                <a
+                    href="{{ route('admin.ai-settings') }}"
+                    class="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition {{ request()->routeIs('admin.ai-settings*') ? 'bg-pink-500/15 text-pink-300 border border-pink-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-800/50' }}"
+                >
+                    <span class="flex items-center gap-2.5">
+                        <span>🤖</span>
+                        <span>Pengaturan AI Gemini</span>
+                    </span>
+                </a>
             </nav>
         </div>
 

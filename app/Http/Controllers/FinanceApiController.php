@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\FinanceVaultService;
+use App\Services\GeminiPlannerService;
 use App\Services\NotificationParserService;
 use Carbon\Carbon;
 use Iam\Client\Claims;
@@ -15,7 +16,8 @@ class FinanceApiController extends Controller
 {
     public function __construct(
         private FinanceVaultService $vault,
-        private NotificationParserService $parser
+        private NotificationParserService $parser,
+        private GeminiPlannerService $gemini
     ) {}
 
     public function corsPreflight(Request $request)
@@ -519,6 +521,74 @@ class FinanceApiController extends Controller
         return response()->json(['deleted' => true, 'id' => $id]);
     }
 
+    public function batchStoreBudgets(Request $request): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Alokasi Anggaran Bulanan')) {
+            return $denied;
+        }
+
+        $sub = $this->sub($request);
+        $data = $request->validate([
+            'month' => ['required', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+            'budgets' => 'required|array|min:1',
+            'budgets.*.categoryId' => 'required|string|max:100',
+            'budgets.*.monthlyLimit' => 'required|numeric|min:0',
+        ]);
+
+        $now = Carbon::now();
+        $month = $data['month'];
+        $nowMs = $this->nowMs();
+
+        DB::transaction(function () use ($sub, $month, $data, $now, $nowMs) {
+            foreach ($data['budgets'] as $idx => $item) {
+                $catId = (string) $item['categoryId'];
+                $limit = (float) $item['monthlyLimit'];
+
+                $existing = DB::table('finance_budgets')
+                    ->where('user_sub', $sub)
+                    ->where('category_id', $catId)
+                    ->where('month', $month)
+                    ->first();
+
+                if ($limit <= 0) {
+                    if ($existing) {
+                        DB::table('finance_budgets')->where('id', $existing->id)->delete();
+                    }
+
+                    continue;
+                }
+
+                if ($existing) {
+                    DB::table('finance_budgets')->where('id', $existing->id)->update([
+                        'monthly_limit' => $limit,
+                        'updated_at' => $now,
+                    ]);
+                } else {
+                    DB::table('finance_budgets')->insert([
+                        'user_sub' => $sub,
+                        'client_id' => 'b-'.($nowMs + $idx).'-'.Str::lower(Str::random(4)),
+                        'category_id' => $catId,
+                        'monthly_limit' => $limit,
+                        'month' => $month,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+                }
+            }
+
+            $this->vault->refreshUserMetrics($sub);
+        });
+
+        $budgets = DB::table('finance_budgets')
+            ->where('user_sub', $sub)
+            ->orderBy('id')
+            ->get()
+            ->map(fn ($b) => $this->vault->mapBudget($b))
+            ->values();
+
+        return response()->json(['budgets' => $budgets]);
+    }
+
     // ==================== SAVING GOALS (PRO) ====================
 
     public function storeSavingGoal(Request $request): JsonResponse
@@ -817,24 +887,50 @@ class FinanceApiController extends Controller
             'walletId' => 'required|string|max:100',
             'dueDay' => 'required|integer|min:1|max:31',
             'billingCycle' => 'nullable|in:monthly,yearly',
-            'billType' => 'nullable|in:subscription,installment',
+            'billType' => 'nullable|in:subscription,installment,debt',
             'totalTenor' => 'nullable|integer|min:1|max:600|required_if:billType,installment',
             'paidCount' => 'nullable|integer|min:0|max:600',
+            'targetMonth' => ['nullable', 'required_if:billType,debt', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+            'creditorName' => 'nullable|string|max:120',
+            'paidAmount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string|max:1000',
         ]);
 
         $billType = $data['billType'] ?? 'subscription';
-        $totalTenor = $billType === 'installment' ? (int) $data['totalTenor'] : null;
-        $paidCount = $billType === 'installment' ? (int) ($data['paidCount'] ?? 0) : 0;
+        $amount = (float) $data['amount'];
+        $totalTenor = null;
+        $paidCount = 0;
+        $targetMonth = null;
+        $creditorName = null;
+        $paidAmount = 0.0;
+        $isActive = true;
 
-        if ($billType === 'installment' && $paidCount > $totalTenor) {
-            return response()->json([
-                'error' => 'validation_error',
-                'message' => 'Jumlah cicilan yang sudah dibayar tidak boleh melebihi total tenor.',
-            ], 422);
+        if ($billType === 'installment') {
+            $totalTenor = (int) $data['totalTenor'];
+            $paidCount = (int) ($data['paidCount'] ?? 0);
+            if ($paidCount > $totalTenor) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Jumlah cicilan yang sudah dibayar tidak boleh melebihi total tenor.',
+                ], 422);
+            }
+            $isActive = $paidCount < $totalTenor;
+        } elseif ($billType === 'debt') {
+            $targetMonth = (string) $data['targetMonth'];
+            $creditorName = ! empty($data['creditorName']) ? trim((string) $data['creditorName']) : null;
+            $paidAmount = (float) ($data['paidAmount'] ?? 0);
+            if ($paidAmount > $amount) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Nominal hutang yang sudah dibayar tidak boleh melebihi total hutang.',
+                ], 422);
+            }
+            $totalTenor = 1;
+            $isPaidOff = ($paidAmount + 0.009) >= $amount;
+            $paidCount = $isPaidOff ? 1 : 0;
+            $isActive = ! $isPaidOff;
         }
 
-        $isActive = $billType === 'installment' ? ($paidCount < $totalTenor) : true;
         $now = Carbon::now();
         $nowMs = $this->nowMs();
         $clientId = 'rec-'.$nowMs.'-'.Str::lower(Str::random(4));
@@ -843,7 +939,7 @@ class FinanceApiController extends Controller
             'user_sub' => $sub,
             'client_id' => $clientId,
             'name' => trim($data['name']),
-            'amount' => (float) $data['amount'],
+            'amount' => $amount,
             'category_id' => $data['categoryId'],
             'wallet_id' => $data['walletId'],
             'due_day' => (int) $data['dueDay'],
@@ -851,6 +947,9 @@ class FinanceApiController extends Controller
             'bill_type' => $billType,
             'total_tenor' => $totalTenor,
             'paid_count' => $paidCount,
+            'target_month' => $targetMonth,
+            'creditor_name' => $creditorName,
+            'paid_amount' => $paidAmount,
             'is_active' => $isActive,
             'notes' => $data['notes'] ?? null,
             'last_paid_date' => null,
@@ -884,20 +983,33 @@ class FinanceApiController extends Controller
             'walletId' => 'sometimes|required|string|max:100',
             'dueDay' => 'sometimes|required|integer|min:1|max:31',
             'billingCycle' => 'sometimes|in:monthly,yearly',
-            'billType' => 'sometimes|in:subscription,installment',
+            'billType' => 'sometimes|in:subscription,installment,debt',
             'totalTenor' => 'nullable|integer|min:1|max:600',
             'paidCount' => 'nullable|integer|min:0|max:600',
+            'targetMonth' => ['nullable', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+            'creditorName' => 'nullable|string|max:120',
+            'paidAmount' => 'nullable|numeric|min:0',
             'isActive' => 'sometimes|boolean',
             'notes' => 'nullable|string|max:1000',
         ]);
 
         $resolvedType = $data['billType'] ?? ($existing->bill_type ?? 'subscription');
+        $resolvedAmount = array_key_exists('amount', $data) ? (float) $data['amount'] : (float) $existing->amount;
         $resolvedTenor = array_key_exists('totalTenor', $data)
             ? ($data['totalTenor'] !== null ? (int) $data['totalTenor'] : null)
             : ($existing->total_tenor !== null ? (int) $existing->total_tenor : null);
         $resolvedPaid = array_key_exists('paidCount', $data)
             ? (int) ($data['paidCount'] ?? 0)
             : (int) ($existing->paid_count ?? 0);
+        $resolvedTargetMonth = array_key_exists('targetMonth', $data)
+            ? ($data['targetMonth'] ? (string) $data['targetMonth'] : null)
+            : ($existing->target_month ?? null);
+        $resolvedCreditor = array_key_exists('creditorName', $data)
+            ? ($data['creditorName'] !== null && trim((string) $data['creditorName']) !== '' ? trim((string) $data['creditorName']) : null)
+            : ($existing->creditor_name ?? null);
+        $resolvedPaidAmount = array_key_exists('paidAmount', $data)
+            ? (float) ($data['paidAmount'] ?? 0)
+            : (float) ($existing->paid_amount ?? 0);
 
         if ($resolvedType === 'installment') {
             if (! $resolvedTenor || $resolvedTenor < 1) {
@@ -912,9 +1024,30 @@ class FinanceApiController extends Controller
                     'message' => 'Jumlah cicilan yang sudah dibayar tidak boleh melebihi total tenor.',
                 ], 422);
             }
+            $resolvedTargetMonth = null;
+            $resolvedCreditor = null;
+            $resolvedPaidAmount = 0.0;
+        } elseif ($resolvedType === 'debt') {
+            if (! $resolvedTargetMonth) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Bulan jatuh tempo hutang wajib dipilih (format YYYY-MM).',
+                ], 422);
+            }
+            if ($resolvedPaidAmount > $resolvedAmount) {
+                return response()->json([
+                    'error' => 'validation_error',
+                    'message' => 'Nominal yang sudah dibayar tidak boleh melebihi total hutang.',
+                ], 422);
+            }
+            $resolvedTenor = 1;
+            $resolvedPaid = ($resolvedPaidAmount + 0.009) >= $resolvedAmount ? 1 : 0;
         } else {
             $resolvedTenor = null;
             $resolvedPaid = 0;
+            $resolvedTargetMonth = null;
+            $resolvedCreditor = null;
+            $resolvedPaidAmount = 0.0;
         }
 
         $updates = [
@@ -922,12 +1055,15 @@ class FinanceApiController extends Controller
             'bill_type' => $resolvedType,
             'total_tenor' => $resolvedTenor,
             'paid_count' => $resolvedPaid,
+            'target_month' => $resolvedTargetMonth,
+            'creditor_name' => $resolvedCreditor,
+            'paid_amount' => $resolvedPaidAmount,
         ];
         if (array_key_exists('name', $data)) {
             $updates['name'] = trim($data['name']);
         }
         if (array_key_exists('amount', $data)) {
-            $updates['amount'] = (float) $data['amount'];
+            $updates['amount'] = $resolvedAmount;
         }
         if (array_key_exists('categoryId', $data)) {
             $updates['category_id'] = $data['categoryId'];
@@ -943,6 +1079,14 @@ class FinanceApiController extends Controller
         }
         if ($resolvedType === 'installment') {
             if ($resolvedPaid >= $resolvedTenor) {
+                $updates['is_active'] = false;
+            } elseif (array_key_exists('isActive', $data)) {
+                $updates['is_active'] = (bool) $data['isActive'];
+            } else {
+                $updates['is_active'] = true;
+            }
+        } elseif ($resolvedType === 'debt') {
+            if (($resolvedPaidAmount + 0.009) >= $resolvedAmount) {
                 $updates['is_active'] = false;
             } elseif (array_key_exists('isActive', $data)) {
                 $updates['is_active'] = (bool) $data['isActive'];
@@ -975,14 +1119,17 @@ class FinanceApiController extends Controller
             return response()->json(['error' => 'not_found', 'message' => 'Tagihan tidak ditemukan.'], 404);
         }
 
-        $isInstallmentPaidOff = ($existing->bill_type ?? 'subscription') === 'installment'
+        $type = $existing->bill_type ?? 'subscription';
+        $isInstallmentPaidOff = $type === 'installment'
             && $existing->total_tenor !== null
             && (int) $existing->paid_count >= (int) $existing->total_tenor;
+        $isDebtPaidOff = $type === 'debt'
+            && ((float) ($existing->paid_amount ?? 0) + 0.009) >= (float) $existing->amount;
 
-        if ($isInstallmentPaidOff && ! (bool) $existing->is_active) {
+        if (($isInstallmentPaidOff || $isDebtPaidOff) && ! (bool) $existing->is_active) {
             return response()->json([
                 'error' => 'already_paid_off',
-                'message' => 'Cicilan ini sudah lunas. Ubah jumlah tenor atau sudah dibayar lewat Edit jika ingin mengaktifkannya lagi.',
+                'message' => ($type === 'debt' ? 'Hutang' : 'Cicilan').' ini sudah lunas. Ubah nominal/tenor lewat Edit jika ingin mengaktifkannya lagi.',
             ], 422);
         }
 
@@ -1002,6 +1149,10 @@ class FinanceApiController extends Controller
             return $denied;
         }
 
+        $payData = $request->validate([
+            'payAmount' => 'nullable|numeric|gt:0',
+        ]);
+
         $sub = $this->sub($request);
         $now = Carbon::now();
         $nowMs = $this->nowMs();
@@ -1011,7 +1162,7 @@ class FinanceApiController extends Controller
         $updatedBill = null;
         $createdTx = null;
 
-        DB::transaction(function () use ($sub, $id, $now, $nowMs, $txId, &$error, &$updatedBill, &$createdTx) {
+        DB::transaction(function () use ($sub, $id, $payData, $now, $nowMs, $txId, &$error, &$updatedBill, &$createdTx) {
             $bill = DB::table('finance_recurring_bills')->where('user_sub', $sub)->where('client_id', $id)->lockForUpdate()->first();
             if (! $bill) {
                 $error = ['status' => 404, 'code' => 'not_found', 'message' => 'Tagihan tidak ditemukan.'];
@@ -1019,12 +1170,21 @@ class FinanceApiController extends Controller
                 return;
             }
 
-            $isInstallment = ($bill->bill_type ?? 'subscription') === 'installment';
+            $billType = $bill->bill_type ?? 'subscription';
+            $isInstallment = $billType === 'installment';
+            $isDebt = $billType === 'debt';
             $totalTenor = $bill->total_tenor !== null ? (int) $bill->total_tenor : null;
             $paidCount = (int) ($bill->paid_count ?? 0);
 
             if ($isInstallment && $totalTenor !== null && $paidCount >= $totalTenor) {
                 $error = ['status' => 422, 'code' => 'already_paid_off', 'message' => 'Cicilan ini sudah lunas seluruhnya.'];
+
+                return;
+            }
+
+            $remainingDebt = max(0.0, (float) $bill->amount - (float) ($bill->paid_amount ?? 0));
+            if ($isDebt && $remainingDebt <= 0.009) {
+                $error = ['status' => 422, 'code' => 'already_paid_off', 'message' => 'Hutang ini sudah lunas seluruhnya.'];
 
                 return;
             }
@@ -1036,14 +1196,27 @@ class FinanceApiController extends Controller
                 return;
             }
 
-            $newPaidCount = $isInstallment ? $paidCount + 1 : $paidCount;
-            $txNote = $isInstallment
-                ? ($totalTenor !== null
-                    ? "Bayar Cicilan ({$newPaidCount}/{$totalTenor}): {$bill->name}"
-                    : "Bayar Cicilan: {$bill->name}")
-                : 'Bayar Tagihan: '.$bill->name;
-
             $amount = (float) $bill->amount;
+            $newPaidCount = $paidCount;
+            $newPaidAmount = (float) ($bill->paid_amount ?? 0);
+
+            if ($isInstallment) {
+                $newPaidCount = $paidCount + 1;
+                $txNote = $totalTenor !== null
+                    ? "Bayar Cicilan ({$newPaidCount}/{$totalTenor}): {$bill->name}"
+                    : "Bayar Cicilan: {$bill->name}";
+            } elseif ($isDebt) {
+                $requestedPay = isset($payData['payAmount']) ? (float) $payData['payAmount'] : $remainingDebt;
+                $amount = min($remainingDebt, $requestedPay);
+                $newPaidAmount = round($newPaidAmount + $amount, 2);
+                $isNowPaidOff = ($newPaidAmount + 0.009) >= (float) $bill->amount;
+                $newPaidCount = $isNowPaidOff ? 1 : 0;
+                $monthTag = $bill->target_month ?: $now->format('Y-m');
+                $txNote = ($isNowPaidOff ? "Lunasi Hutang ({$monthTag})" : "Cicil Hutang ({$monthTag})").": {$bill->name}";
+            } else {
+                $txNote = 'Bayar Tagihan: '.$bill->name;
+            }
+
             DB::table('finance_wallets')->where('id', $wallet->id)->update([
                 'balance' => (float) $wallet->balance - $amount,
                 'updated_ms' => $nowMs,
@@ -1075,6 +1248,12 @@ class FinanceApiController extends Controller
             if ($isInstallment) {
                 $billUpdates['paid_count'] = $newPaidCount;
                 if ($totalTenor !== null && $newPaidCount >= $totalTenor) {
+                    $billUpdates['is_active'] = false;
+                }
+            } elseif ($isDebt) {
+                $billUpdates['paid_amount'] = $newPaidAmount;
+                $billUpdates['paid_count'] = $newPaidCount;
+                if ($newPaidCount === 1) {
                     $billUpdates['is_active'] = false;
                 }
             }
@@ -1327,5 +1506,250 @@ class FinanceApiController extends Controller
         $this->vault->refreshUserMetrics($sub);
 
         return response()->json(['deleted' => true, 'id' => $id]);
+    }
+
+    // ==================== MONTHLY SALARY PLANS & AI ANALYSIS (PRO) ====================
+
+    public function listMonthlyPlans(Request $request): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Perencana Gaji & Analisa AI')) {
+            return $denied;
+        }
+
+        $sub = $this->sub($request);
+        $plans = DB::table('finance_monthly_plans')
+            ->where('user_sub', $sub)
+            ->orderByDesc('month')
+            ->get()
+            ->map(fn ($p) => $this->vault->mapMonthlyPlan($p))
+            ->values();
+
+        return response()->json([
+            'monthlyPlans' => $plans,
+            'aiSettings' => [
+                'configured' => $this->gemini->hasApiKey(),
+                'defaultModel' => $this->gemini->getDefaultModel(),
+                'models' => $this->gemini->availableModels(),
+            ],
+        ]);
+    }
+
+    public function upsertMonthlyPlan(Request $request, string $month): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Perencana Gaji & Analisa AI')) {
+            return $denied;
+        }
+
+        if (! preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) {
+            return response()->json(['error' => 'validation_error', 'message' => 'Format bulan harus YYYY-MM.'], 422);
+        }
+
+        $data = $request->validate([
+            'monthlySalary' => 'required|numeric|min:0',
+            'strategyNotes' => 'nullable|string|max:1000',
+            'preferredModel' => 'nullable|string|max:64',
+        ]);
+
+        $sub = $this->sub($request);
+        $now = Carbon::now();
+        $model = $this->gemini->isValidModel($data['preferredModel'] ?? null)
+            ? $data['preferredModel']
+            : $this->gemini->getDefaultModel();
+
+        $existing = DB::table('finance_monthly_plans')
+            ->where('user_sub', $sub)
+            ->where('month', $month)
+            ->first();
+
+        if ($existing) {
+            DB::table('finance_monthly_plans')->where('id', $existing->id)->update([
+                'monthly_salary' => (float) $data['monthlySalary'],
+                'strategy_notes' => $data['strategyNotes'] ?? $existing->strategy_notes,
+                'preferred_model' => $model,
+                'updated_at' => $now,
+            ]);
+        } else {
+            DB::table('finance_monthly_plans')->insert([
+                'user_sub' => $sub,
+                'month' => $month,
+                'monthly_salary' => (float) $data['monthlySalary'],
+                'strategy_notes' => $data['strategyNotes'] ?? null,
+                'preferred_model' => $model,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        $row = DB::table('finance_monthly_plans')->where('user_sub', $sub)->where('month', $month)->first();
+
+        return response()->json(['monthlyPlan' => $this->vault->mapMonthlyPlan($row)]);
+    }
+
+    public function analyzeMonthlyPlan(Request $request, string $month): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Perencana Gaji & Analisa AI')) {
+            return $denied;
+        }
+
+        if (! preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) {
+            return response()->json(['error' => 'validation_error', 'message' => 'Format bulan harus YYYY-MM.'], 422);
+        }
+
+        $data = $request->validate([
+            'monthlySalary' => 'nullable|numeric|min:0',
+            'strategyNotes' => 'nullable|string|max:1000',
+            'preferredModel' => 'nullable|string|max:64',
+        ]);
+
+        $sub = $this->sub($request);
+        $this->vault->ensureDefaultCategories($sub);
+        $now = Carbon::now();
+
+        $existing = DB::table('finance_monthly_plans')->where('user_sub', $sub)->where('month', $month)->first();
+        $salary = array_key_exists('monthlySalary', $data) && $data['monthlySalary'] !== null
+            ? (float) $data['monthlySalary']
+            : (float) ($existing->monthly_salary ?? 0);
+        $strategyNotes = array_key_exists('strategyNotes', $data)
+            ? $data['strategyNotes']
+            : ($existing->strategy_notes ?? null);
+        $preferredModel = $this->gemini->isValidModel($data['preferredModel'] ?? null)
+            ? $data['preferredModel']
+            : ($existing->preferred_model ?? $this->gemini->getDefaultModel());
+
+        if ($salary <= 0) {
+            return response()->json([
+                'error' => 'validation_error',
+                'message' => 'Masukkan nominal gaji bulanan lebih dari Rp 0 sebelum menjalankan analisa AI.',
+            ], 422);
+        }
+
+        $wallets = DB::table('finance_wallets')->where('user_sub', $sub)->get();
+        $totalWalletBalance = (float) $wallets->sum('balance');
+
+        $bills = DB::table('finance_recurring_bills')->where('user_sub', $sub)->get();
+        $subscriptions = $bills->filter(fn ($b) => ($b->bill_type ?? 'subscription') === 'subscription' && (bool) $b->is_active);
+        $installments = $bills->filter(fn ($b) => ($b->bill_type ?? 'subscription') === 'installment' && (bool) $b->is_active);
+        $debtsForMonth = $bills->filter(function ($b) use ($month) {
+            if (($b->bill_type ?? 'subscription') !== 'debt' || ($b->target_month ?? '') !== $month) {
+                return false;
+            }
+            $remaining = max(0.0, (float) $b->amount - (float) ($b->paid_amount ?? 0));
+
+            return $remaining > 0.009;
+        });
+
+        $subscriptionsTotal = (float) $subscriptions->sum('amount');
+        $installmentsTotal = (float) $installments->sum('amount');
+        $debtsTotal = (float) $debtsForMonth->sum(fn ($d) => max(0.0, (float) $d->amount - (float) ($d->paid_amount ?? 0)));
+        $totalCommitments = $subscriptionsTotal + $installmentsTotal + $debtsTotal;
+        $freeCashAfterCommitments = $salary - $totalCommitments;
+
+        $categories = DB::table('finance_categories')->where('user_sub', $sub)->get();
+        $expenseCategories = $categories
+            ->filter(fn ($c) => $c->type === 'expense' && $c->client_id !== 'cat-transfer')
+            ->map(fn ($c) => ['id' => $c->client_id, 'name' => $c->name])
+            ->values()
+            ->all();
+
+        $txThisMonth = DB::table('finance_transactions')
+            ->where('user_sub', $sub)
+            ->where('tx_date', 'like', $month.'%')
+            ->get();
+
+        $spentByCategory = [];
+        foreach ($txThisMonth as $t) {
+            if ($t->type === 'expense') {
+                $spentByCategory[$t->category_id] = ($spentByCategory[$t->category_id] ?? 0.0) + (float) $t->amount;
+            }
+        }
+
+        $currentBudgets = DB::table('finance_budgets')
+            ->where('user_sub', $sub)
+            ->where('month', $month)
+            ->get()
+            ->map(fn ($b) => ['categoryId' => $b->category_id, 'monthlyLimit' => (float) $b->monthly_limit])
+            ->values()
+            ->all();
+
+        $savingGoals = DB::table('finance_saving_goals')
+            ->where('user_sub', $sub)
+            ->get()
+            ->map(fn ($g) => [
+                'name' => $g->name,
+                'targetAmount' => (float) $g->target_amount,
+                'currentAmount' => (float) $g->current_amount,
+            ])
+            ->values()
+            ->all();
+
+        $context = [
+            'month' => $month,
+            'monthlySalary' => $salary,
+            'totalWalletBalance' => $totalWalletBalance,
+            'strategyNotes' => $strategyNotes,
+            'commitmentsSummary' => [
+                'subscriptionsMonthly' => $subscriptionsTotal,
+                'installmentsMonthly' => $installmentsTotal,
+                'debtsForSelectedMonth' => $debtsTotal,
+                'totalMandatoryCommitments' => $totalCommitments,
+                'remainingDisposableFromSalary' => $freeCashAfterCommitments,
+            ],
+            'subscriptions' => $subscriptions->map(fn ($s) => ['name' => $s->name, 'amount' => (float) $s->amount])->values()->all(),
+            'installments' => $installments->map(fn ($i) => [
+                'name' => $i->name,
+                'amount' => (float) $i->amount,
+                'paidCount' => (int) ($i->paid_count ?? 0),
+                'totalTenor' => $i->total_tenor !== null ? (int) $i->total_tenor : null,
+            ])->values()->all(),
+            'debtsForSelectedMonth' => $debtsForMonth->map(fn ($d) => [
+                'name' => $d->name,
+                'creditor' => $d->creditor_name,
+                'remainingAmount' => max(0.0, (float) $d->amount - (float) ($d->paid_amount ?? 0)),
+                'dueDay' => (int) $d->due_day,
+            ])->values()->all(),
+            'expenseCategories' => $expenseCategories,
+            'spentByCategoryThisMonth' => $spentByCategory,
+            'existingBudgetsThisMonth' => $currentBudgets,
+            'savingGoals' => $savingGoals,
+        ];
+
+        try {
+            $analysis = $this->gemini->analyzeMonthlyPlan($month, $context, $preferredModel);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'error' => 'ai_analysis_failed',
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        if ($existing) {
+            DB::table('finance_monthly_plans')->where('id', $existing->id)->update([
+                'monthly_salary' => $salary,
+                'strategy_notes' => $strategyNotes,
+                'preferred_model' => $analysis['modelUsed'] ?? $preferredModel,
+                'ai_analysis' => json_encode($analysis, JSON_UNESCAPED_UNICODE),
+                'last_analyzed_at' => $now,
+                'updated_at' => $now,
+            ]);
+        } else {
+            DB::table('finance_monthly_plans')->insert([
+                'user_sub' => $sub,
+                'month' => $month,
+                'monthly_salary' => $salary,
+                'strategy_notes' => $strategyNotes,
+                'preferred_model' => $analysis['modelUsed'] ?? $preferredModel,
+                'ai_analysis' => json_encode($analysis, JSON_UNESCAPED_UNICODE),
+                'last_analyzed_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        $row = DB::table('finance_monthly_plans')->where('user_sub', $sub)->where('month', $month)->first();
+
+        return response()->json([
+            'monthlyPlan' => $this->vault->mapMonthlyPlan($row),
+            'contextSummary' => $context['commitmentsSummary'],
+        ]);
     }
 }

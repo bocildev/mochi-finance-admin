@@ -4,9 +4,11 @@ namespace App\Services;
 
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class FinanceVaultService
 {
+    public function __construct(private GeminiPlannerService $gemini) {}
     public function isFree(object $userRow): bool
     {
         return ($userRow->plan_tier ?? 'free') === 'free';
@@ -154,10 +156,31 @@ class FinanceVaultService
             'billType' => $r->bill_type ?? 'subscription',
             'totalTenor' => isset($r->total_tenor) ? (int) $r->total_tenor : null,
             'paidCount' => (int) ($r->paid_count ?? 0),
+            'targetMonth' => $r->target_month ?? null,
+            'creditorName' => $r->creditor_name ?? null,
+            'paidAmount' => (float) ($r->paid_amount ?? 0),
             'isActive' => (bool) $r->is_active,
             'notes' => $r->notes,
             'lastPaidDate' => $r->last_paid_date,
             'createdAt' => (int) $r->created_ms,
+        ];
+    }
+
+    public function mapMonthlyPlan(object $p): array
+    {
+        $analysis = null;
+        if (! empty($p->ai_analysis)) {
+            $decoded = json_decode($p->ai_analysis, true);
+            $analysis = is_array($decoded) ? $decoded : null;
+        }
+
+        return [
+            'month' => $p->month,
+            'monthlySalary' => (float) $p->monthly_salary,
+            'strategyNotes' => $p->strategy_notes,
+            'preferredModel' => $p->preferred_model ?: $this->gemini->getDefaultModel(),
+            'aiAnalysis' => $analysis,
+            'lastAnalyzedAt' => $p->last_analyzed_at ? Carbon::parse($p->last_analyzed_at)->toIso8601String() : null,
         ];
     }
 
@@ -258,6 +281,16 @@ class FinanceVaultService
                 ->values()
                 ->all();
 
+        $monthlyPlans = ($isFree || ! Schema::hasTable('finance_monthly_plans'))
+            ? []
+            : DB::table('finance_monthly_plans')
+                ->where('user_sub', $sub)
+                ->orderByDesc('month')
+                ->get()
+                ->map(fn ($p) => $this->mapMonthlyPlan($p))
+                ->values()
+                ->all();
+
         return [
             'sub' => $sub,
             'plan_tier' => $userRow->plan_tier ?? 'free',
@@ -270,6 +303,12 @@ class FinanceVaultService
             'savingGoals' => $savingGoals,
             'recurringBills' => $recurringBills,
             'inbox' => $inbox,
+            'monthlyPlans' => $monthlyPlans,
+            'aiSettings' => [
+                'configured' => $this->gemini->hasApiKey(),
+                'defaultModel' => $this->gemini->getDefaultModel(),
+                'models' => $this->gemini->availableModels(),
+            ],
         ];
     }
 }

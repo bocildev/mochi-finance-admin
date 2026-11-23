@@ -81,9 +81,11 @@ class MaintenanceController extends Controller
         'finance_budgets',
         'finance_saving_goals',
         'finance_recurring_bills',
+        'finance_monthly_plans',
         'finance_inbox_items',
         'saas_plans',
         'upgrade_requests',
+        'system_settings',
         'iam_webhook_events',
         'sessions',
     ];

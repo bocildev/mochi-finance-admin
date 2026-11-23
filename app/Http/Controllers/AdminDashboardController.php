@@ -357,6 +357,9 @@ class AdminDashboardController extends Controller
             DB::table('finance_budgets')->where('user_sub', $sub)->delete();
             DB::table('finance_saving_goals')->where('user_sub', $sub)->delete();
             DB::table('finance_recurring_bills')->where('user_sub', $sub)->delete();
+            if (\Illuminate\Support\Facades\Schema::hasTable('finance_monthly_plans')) {
+                DB::table('finance_monthly_plans')->where('user_sub', $sub)->delete();
+            }
             DB::table('finance_inbox_items')->where('user_sub', $sub)->delete();
             DB::table('upgrade_requests')->where('user_sub', $sub)->delete();
             DB::table('finance_users')->where('sub', $sub)->delete();

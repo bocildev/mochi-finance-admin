@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Services\GeminiPlannerService;
 use App\Services\IamSsoService;
 use Firebase\JWT\JWT;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class FinanceRestApiTest extends TestCase
@@ -464,5 +466,210 @@ class FinanceRestApiTest extends TestCase
 
         $this->assertDatabaseMissing('finance_recurring_bills', ['client_id' => $subId]);
         $this->assertDatabaseMissing('finance_recurring_bills', ['client_id' => $instId]);
+    }
+
+    public function test_month_specific_debt_partial_and_full_payment_lifecycle(): void
+    {
+        $token = $this->tokenFor('usr_debt_user');
+
+        $walletId = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/wallets', ['name' => 'BCA', 'type' => 'bank', 'balance' => 1500000])
+            ->json('wallet.id');
+
+        // Missing targetMonth must fail 422
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Hutang Teman',
+                'amount' => 500000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 25,
+                'billType' => 'debt',
+            ])
+            ->assertStatus(422);
+
+        // Create debt for 2026-12
+        $debtRes = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Pinjaman Darurat',
+                'amount' => 500000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 25,
+                'billType' => 'debt',
+                'targetMonth' => '2026-12',
+                'creditorName' => 'Budi',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('recurringBill.billType', 'debt')
+            ->assertJsonPath('recurringBill.targetMonth', '2026-12')
+            ->assertJsonPath('recurringBill.creditorName', 'Budi')
+            ->assertJsonPath('recurringBill.paidAmount', 0)
+            ->assertJsonPath('recurringBill.isActive', true);
+        $debtId = $debtRes->json('recurringBill.id');
+
+        // Partial pay 200k -> remaining 300k, still active
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$debtId}/pay", ['payAmount' => 200000])
+            ->assertOk()
+            ->assertJsonPath('recurringBill.paidAmount', 200000)
+            ->assertJsonPath('recurringBill.isActive', true)
+            ->assertJsonPath('transaction.amount', 200000);
+        $this->assertEquals(1300000.0, (float) DB::table('finance_wallets')->where('client_id', $walletId)->value('balance'));
+
+        // Pay remaining (default full remaining = 300k) -> auto lunas (isActive = false)
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$debtId}/pay")
+            ->assertOk()
+            ->assertJsonPath('recurringBill.paidAmount', 500000)
+            ->assertJsonPath('recurringBill.isActive', false)
+            ->assertJsonPath('transaction.amount', 300000);
+        $this->assertEquals(1000000.0, (float) DB::table('finance_wallets')->where('client_id', $walletId)->value('balance'));
+
+        // Cannot pay again after debt lunas
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson("/api/v1/recurring-bills/{$debtId}/pay")
+            ->assertStatus(422)
+            ->assertJsonPath('error', 'already_paid_off');
+
+        // Delete debt permanently
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->deleteJson("/api/v1/recurring-bills/{$debtId}")
+            ->assertOk()
+            ->assertJsonPath('deleted', true);
+    }
+
+    public function test_salary_planner_gemini_analysis_fallback_and_flexible_batch_budgets(): void
+    {
+        $token = $this->tokenFor('usr_planner_pro');
+
+        // 1. Admin configures encrypted API key & default model in AiSettingsController
+        DB::table('finance_users')->insert([
+            'sub' => 'usr_admin_ai',
+            'name' => 'Admin AI',
+            'email' => 'athallahrich@gmail.com',
+            'roles' => json_encode(['admin']),
+            'permissions' => json_encode(IamSsoService::ROLE_PERMISSIONS['admin']),
+            'plan_tier' => 'admin',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $adminSession = [
+            'iam_user' => [
+                'sub' => 'usr_admin_ai',
+                'name' => 'Admin AI',
+                'email' => 'athallahrich@gmail.com',
+                'roles' => ['admin'],
+                'permissions' => IamSsoService::ROLE_PERMISSIONS['admin'],
+                'plan_tier' => 'admin',
+            ],
+        ];
+
+        $this->withSession($adminSession)
+            ->post('/ai-settings', [
+                'google_api_key' => 'fake_test_key_for_encryption_check',
+                'default_model' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertRedirect('/ai-settings')
+            ->assertSessionHas('status');
+
+        $rawDbVal = (string) DB::table('system_settings')->where('key', 'google_gemini_api_key')->value('value');
+        $this->assertNotSame('fake_test_key_for_encryption_check', $rawDbVal);
+        $this->assertSame('fake_test_key_for_encryption_check', app(GeminiPlannerService::class)->getApiKey());
+
+        // 2. Setup wallet + debt in 2026-12 for planner context
+        $walletId = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/wallets', ['name' => 'Mandiri', 'type' => 'bank', 'balance' => 4000000])
+            ->json('wallet.id');
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/recurring-bills', [
+                'name' => 'Hutang Akhir Tahun',
+                'amount' => 1000000,
+                'categoryId' => 'cat-bills',
+                'walletId' => $walletId,
+                'dueDay' => 20,
+                'billType' => 'debt',
+                'targetMonth' => '2026-12',
+            ])
+            ->assertCreated();
+
+        // 3. Save monthly salary for 2026-12
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/v1/monthly-plans/2026-12', [
+                'monthlySalary' => 8000000,
+                'strategyNotes' => 'Prioritaskan lunasi hutang Desember dan tetap sisihkan tabungan.',
+                'preferredModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk()
+            ->assertJsonPath('monthlyPlan.monthlySalary', 8000000)
+            ->assertJsonPath('monthlyPlan.preferredModel', 'gemini-3.5-flash-lite');
+
+        // 4. Mock Gemini API: 3.5-flash-lite returns 429 rate-limit -> auto-fallback to 3.1-flash-lite 200 JSON!
+        $aiPayload = json_encode([
+            'summary' => 'Dari gaji Rp 8.000.000 dikurangi hutang Rp 1.000.000, sisa dana bebas Rp 7.000.000.',
+            'healthStatus' => 'sehat',
+            'allocationRatio' => ['needsPct' => 50, 'wantsPct' => 20, 'savingsAndDebtPct' => 30],
+            'actionPlan' => [
+                'Sisihkan Rp 1.000.000 di awal bulan untuk melunasi hutang Desember.',
+                'Batasi makan & minum di Rp 1.800.000.',
+            ],
+            'recommendedBudgets' => [
+                ['categoryId' => 'cat-food', 'categoryName' => 'Makanan & Minuman', 'recommendedLimit' => 1800000, 'reason' => 'Kebutuhan pokok harian'],
+                ['categoryId' => 'cat-transport', 'categoryName' => 'Transportasi', 'recommendedLimit' => 600000, 'reason' => 'Komuter harian'],
+                ['categoryId' => 'cat-invalid-id', 'categoryName' => 'Invalid', 'recommendedLimit' => 999999, 'reason' => 'Harus tersaring'],
+            ],
+        ]);
+
+        Http::fake([
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent' => Http::response([
+                'error' => ['message' => 'Rate limit exceeded'],
+            ], 429),
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent' => Http::response([
+                'candidates' => [[
+                    'content' => [
+                        'parts' => [['text' => $aiPayload]],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $analyzeRes = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/monthly-plans/2026-12/analyze', [
+                'monthlySalary' => 8000000,
+                'preferredModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk()
+            ->assertJsonPath('monthlyPlan.aiAnalysis.healthStatus', 'sehat')
+            ->assertJsonPath('monthlyPlan.aiAnalysis.modelUsed', 'gemini-3.1-flash-lite')
+            ->assertJsonPath('monthlyPlan.aiAnalysis.fallbackUsed', true)
+            ->assertJsonPath('contextSummary.debtsForSelectedMonth', 1000000)
+            ->assertJsonCount(2, 'monthlyPlan.aiAnalysis.recommendedBudgets');
+
+        $this->assertSame(1800000, $analyzeRes->json('monthlyPlan.aiAnalysis.recommendedBudgets.0.recommendedLimit'));
+
+        // 5. Apply flexible user-adjusted budgets for 2026-12 via batch endpoint
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/budgets/batch', [
+                'month' => '2026-12',
+                'budgets' => [
+                    ['categoryId' => 'cat-food', 'monthlyLimit' => 2000000],
+                    ['categoryId' => 'cat-transport', 'monthlyLimit' => 550000],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonCount(2, 'budgets');
+
+        // Reload bootstrap confirms persisted monthlyPlan & month-scoped budgets, and NEVER leaks API key
+        $boot = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->getJson('/api/v1/bootstrap')
+            ->assertOk()
+            ->assertJsonPath('aiSettings.configured', true)
+            ->assertJsonPath('monthlyPlans.0.month', '2026-12')
+            ->assertJsonPath('monthlyPlans.0.monthlySalary', 8000000);
+
+        $this->assertStringNotContainsString('fake_test_key_for_encryption_check', $boot->getContent());
     }
 }

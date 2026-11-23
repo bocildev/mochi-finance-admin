@@ -335,11 +335,14 @@ class CloudSyncController extends Controller
                                 'wallet_id' => (string) ($r['walletId'] ?? ''),
                                 'due_day' => (int) ($r['dueDay'] ?? 1),
                                 'billing_cycle' => (string) ($r['billingCycle'] ?? 'monthly'),
-                                'bill_type' => in_array($r['billType'] ?? 'subscription', ['subscription', 'installment'], true)
+                                'bill_type' => in_array($r['billType'] ?? 'subscription', ['subscription', 'installment', 'debt'], true)
                                     ? ($r['billType'] ?? 'subscription')
                                     : 'subscription',
                                 'total_tenor' => isset($r['totalTenor']) ? (int) $r['totalTenor'] : null,
                                 'paid_count' => (int) ($r['paidCount'] ?? 0),
+                                'target_month' => $r['targetMonth'] ?? null,
+                                'creditor_name' => $r['creditorName'] ?? null,
+                                'paid_amount' => (float) ($r['paidAmount'] ?? 0),
                                 'is_active' => (bool) ($r['isActive'] ?? true),
                                 'notes' => $r['notes'] ?? null,
                                 'last_paid_date' => $r['lastPaidDate'] ?? null,
