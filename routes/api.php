@@ -43,6 +43,11 @@ Route::prefix('v1')->group(function () {
         Route::put('/monthly-plans/{month}', [FinanceApiController::class, 'upsertMonthlyPlan'])->name('api.monthly-plans.upsert');
         Route::post('/monthly-plans/{month}/analyze', [FinanceApiController::class, 'analyzeMonthlyPlan'])->name('api.monthly-plans.analyze');
 
+        // Per-User Google Gemini AI Settings (BYOK encrypted per user_sub)
+        Route::get('/ai-settings', [FinanceApiController::class, 'getAiSettings'])->name('api.ai-settings.show');
+        Route::put('/ai-settings', [FinanceApiController::class, 'updateAiSettings'])->name('api.ai-settings.update');
+        Route::post('/ai-settings/test', [FinanceApiController::class, 'testAiSettings'])->name('api.ai-settings.test');
+
         // Saving Goals CRUD + Deposit / Withdraw (Pro)
         Route::post('/saving-goals', [FinanceApiController::class, 'storeSavingGoal'])->name('api.goals.store');
         Route::put('/saving-goals/{id}', [FinanceApiController::class, 'updateSavingGoal'])->name('api.goals.update');

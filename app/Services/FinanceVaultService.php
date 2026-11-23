@@ -178,7 +178,7 @@ class FinanceVaultService
             'month' => $p->month,
             'monthlySalary' => (float) $p->monthly_salary,
             'strategyNotes' => $p->strategy_notes,
-            'preferredModel' => $p->preferred_model ?: $this->gemini->getDefaultModel(),
+            'preferredModel' => $p->preferred_model ?: $this->gemini->getDefaultModel((string) ($p->user_sub ?? '')),
             'aiAnalysis' => $analysis,
             'lastAnalyzedAt' => $p->last_analyzed_at ? Carbon::parse($p->last_analyzed_at)->toIso8601String() : null,
         ];
@@ -304,11 +304,7 @@ class FinanceVaultService
             'recurringBills' => $recurringBills,
             'inbox' => $inbox,
             'monthlyPlans' => $monthlyPlans,
-            'aiSettings' => [
-                'configured' => $this->gemini->hasApiKey(),
-                'defaultModel' => $this->gemini->getDefaultModel(),
-                'models' => $this->gemini->availableModels(),
-            ],
+            'aiSettings' => $this->gemini->getUserSettingsSummary($sub),
         ];
     }
 }

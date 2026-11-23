@@ -1,7 +1,6 @@
 <?php
 
 use App\Http\Controllers\AdminDashboardController;
-use App\Http\Controllers\AiSettingsController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\MaintenanceController;
 use Illuminate\Support\Facades\Route;
@@ -31,9 +30,4 @@ Route::middleware('sso:finance.admin')->group(function () {
     Route::get('/maintenance', [MaintenanceController::class, 'index'])->name('admin.maintenance');
     Route::post('/maintenance/run', [MaintenanceController::class, 'runCommand'])->name('admin.maintenance.run');
     Route::post('/maintenance/logs/clear', [MaintenanceController::class, 'clearLogs'])->name('admin.maintenance.logs.clear');
-
-    // Pengaturan AI Google Gemini (Encrypted API Key & Model Selection)
-    Route::get('/ai-settings', [AiSettingsController::class, 'index'])->name('admin.ai-settings');
-    Route::post('/ai-settings', [AiSettingsController::class, 'update'])->name('admin.ai-settings.update');
-    Route::post('/ai-settings/test', [AiSettingsController::class, 'test'])->name('admin.ai-settings.test');
 });

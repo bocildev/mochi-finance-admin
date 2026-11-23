@@ -10,6 +10,7 @@ use Iam\Client\Claims;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class FinanceApiController extends Controller
@@ -1526,11 +1527,7 @@ class FinanceApiController extends Controller
 
         return response()->json([
             'monthlyPlans' => $plans,
-            'aiSettings' => [
-                'configured' => $this->gemini->hasApiKey(),
-                'defaultModel' => $this->gemini->getDefaultModel(),
-                'models' => $this->gemini->availableModels(),
-            ],
+            'aiSettings' => $this->gemini->getUserSettingsSummary($sub),
         ]);
     }
 
@@ -1554,7 +1551,7 @@ class FinanceApiController extends Controller
         $now = Carbon::now();
         $model = $this->gemini->isValidModel($data['preferredModel'] ?? null)
             ? $data['preferredModel']
-            : $this->gemini->getDefaultModel();
+            : $this->gemini->getDefaultModel($sub);
 
         $existing = DB::table('finance_monthly_plans')
             ->where('user_sub', $sub)
@@ -1614,7 +1611,7 @@ class FinanceApiController extends Controller
             : ($existing->strategy_notes ?? null);
         $preferredModel = $this->gemini->isValidModel($data['preferredModel'] ?? null)
             ? $data['preferredModel']
-            : ($existing->preferred_model ?? $this->gemini->getDefaultModel());
+            : ($existing->preferred_model ?? $this->gemini->getDefaultModel($sub));
 
         if ($salary <= 0) {
             return response()->json([
@@ -1714,7 +1711,7 @@ class FinanceApiController extends Controller
         ];
 
         try {
-            $analysis = $this->gemini->analyzeMonthlyPlan($month, $context, $preferredModel);
+            $analysis = $this->gemini->analyzeMonthlyPlan($sub, $month, $context, $preferredModel);
         } catch (\Throwable $e) {
             return response()->json([
                 'error' => 'ai_analysis_failed',
@@ -1751,5 +1748,69 @@ class FinanceApiController extends Controller
             'monthlyPlan' => $this->vault->mapMonthlyPlan($row),
             'contextSummary' => $context['commitmentsSummary'],
         ]);
+    }
+
+    // ==================== PER-USER GOOGLE GEMINI AI SETTINGS (BYOK) ====================
+
+    public function getAiSettings(Request $request): JsonResponse
+    {
+        return response()->json([
+            'aiSettings' => $this->gemini->getUserSettingsSummary($this->sub($request)),
+        ]);
+    }
+
+    public function updateAiSettings(Request $request): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Pengaturan AI Google Gemini')) {
+            return $denied;
+        }
+
+        if (! Schema::hasTable('finance_user_ai_settings')) {
+            return response()->json([
+                'error' => 'migration_required',
+                'message' => 'Tabel finance_user_ai_settings belum dimigrasi. Admin perlu menjalankan Migrate di Debugger.',
+            ], 500);
+        }
+
+        $allowedModelIds = array_column($this->gemini->availableModels(), 'id');
+        $data = $request->validate([
+            'googleApiKey' => 'nullable|string|max:512',
+            'clearApiKey' => 'nullable|boolean',
+            'defaultModel' => 'required|string|in:'.implode(',', $allowedModelIds),
+        ]);
+
+        $sub = $this->sub($request);
+
+        if (! empty($data['clearApiKey'])) {
+            $this->gemini->setApiKey($sub, null, $data['defaultModel']);
+        } elseif (! empty(trim((string) ($data['googleApiKey'] ?? '')))) {
+            $this->gemini->setApiKey($sub, $data['googleApiKey'], $data['defaultModel']);
+        } else {
+            $this->gemini->setDefaultModel($sub, $data['defaultModel']);
+        }
+
+        return response()->json([
+            'aiSettings' => $this->gemini->getUserSettingsSummary($sub),
+        ]);
+    }
+
+    public function testAiSettings(Request $request): JsonResponse
+    {
+        if ($denied = $this->requirePro($request, 'Pengaturan AI Google Gemini')) {
+            return $denied;
+        }
+
+        $data = $request->validate([
+            'googleApiKey' => 'nullable|string|max:512',
+            'model' => 'nullable|string|max:64',
+        ]);
+
+        $result = $this->gemini->testConnection(
+            $this->sub($request),
+            $data['model'] ?? null,
+            $data['googleApiKey'] ?? null
+        );
+
+        return response()->json($result);
     }
 }

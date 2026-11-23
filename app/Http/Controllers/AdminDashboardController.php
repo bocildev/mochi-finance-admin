@@ -360,6 +360,9 @@ class AdminDashboardController extends Controller
             if (\Illuminate\Support\Facades\Schema::hasTable('finance_monthly_plans')) {
                 DB::table('finance_monthly_plans')->where('user_sub', $sub)->delete();
             }
+            if (\Illuminate\Support\Facades\Schema::hasTable('finance_user_ai_settings')) {
+                DB::table('finance_user_ai_settings')->where('user_sub', $sub)->delete();
+            }
             DB::table('finance_inbox_items')->where('user_sub', $sub)->delete();
             DB::table('upgrade_requests')->where('user_sub', $sub)->delete();
             DB::table('finance_users')->where('sub', $sub)->delete();

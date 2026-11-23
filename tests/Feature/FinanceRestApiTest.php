@@ -542,42 +542,48 @@ class FinanceRestApiTest extends TestCase
     public function test_salary_planner_gemini_analysis_fallback_and_flexible_batch_budgets(): void
     {
         $token = $this->tokenFor('usr_planner_pro');
+        $otherToken = $this->tokenFor('usr_other_byok');
 
-        // 1. Admin configures encrypted API key & default model in AiSettingsController
-        DB::table('finance_users')->insert([
-            'sub' => 'usr_admin_ai',
-            'name' => 'Admin AI',
-            'email' => 'athallahrich@gmail.com',
-            'roles' => json_encode(['admin']),
-            'permissions' => json_encode(IamSsoService::ROLE_PERMISSIONS['admin']),
-            'plan_tier' => 'admin',
-            'status' => 'active',
-            'created_at' => now(),
-            'updated_at' => now(),
+        // 0. Ensure user without personal key fails gracefully and is isolated
+        $this->withHeader('Authorization', 'Bearer '.$otherToken)
+            ->getJson('/api/v1/ai-settings')
+            ->assertOk()
+            ->assertJsonPath('aiSettings.configured', false);
+
+        // 1. User configures their own encrypted Google Gemini API key & default model
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/v1/ai-settings', [
+                'googleApiKey' => 'fake_test_key_for_encryption_check',
+                'defaultModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk()
+            ->assertJsonPath('aiSettings.configured', true)
+            ->assertJsonPath('aiSettings.defaultModel', 'gemini-3.5-flash-lite');
+
+        $rawDbVal = (string) DB::table('finance_user_ai_settings')->where('user_sub', 'usr_planner_pro')->value('google_api_key_encrypted');
+        $this->assertNotSame('fake_test_key_for_encryption_check', $rawDbVal);
+        $this->assertSame('fake_test_key_for_encryption_check', app(GeminiPlannerService::class)->getApiKey('usr_planner_pro'));
+
+        // Another user must NOT see or inherit usr_planner_pro's key
+        $this->assertSame('', app(GeminiPlannerService::class)->getApiKey('usr_other_byok'));
+        $this->withHeader('Authorization', 'Bearer '.$otherToken)
+            ->postJson('/api/v1/monthly-plans/2026-12/analyze', ['monthlySalary' => 5000000])
+            ->assertStatus(422);
+
+        // Test connection endpoint works with user's key
+        Http::fake([
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent' => Http::response([
+                'candidates' => [['content' => ['parts' => [['text' => '{"ok":true}']]]]],
+            ], 200),
         ]);
 
-        $adminSession = [
-            'iam_user' => [
-                'sub' => 'usr_admin_ai',
-                'name' => 'Admin AI',
-                'email' => 'athallahrich@gmail.com',
-                'roles' => ['admin'],
-                'permissions' => IamSsoService::ROLE_PERMISSIONS['admin'],
-                'plan_tier' => 'admin',
-            ],
-        ];
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/ai-settings/test', ['model' => 'gemini-3.5-flash-lite'])
+            ->assertOk()
+            ->assertJsonPath('ok', true);
 
-        $this->withSession($adminSession)
-            ->post('/ai-settings', [
-                'google_api_key' => 'fake_test_key_for_encryption_check',
-                'default_model' => 'gemini-3.5-flash-lite',
-            ])
-            ->assertRedirect('/ai-settings')
-            ->assertSessionHas('status');
-
-        $rawDbVal = (string) DB::table('system_settings')->where('key', 'google_gemini_api_key')->value('value');
-        $this->assertNotSame('fake_test_key_for_encryption_check', $rawDbVal);
-        $this->assertSame('fake_test_key_for_encryption_check', app(GeminiPlannerService::class)->getApiKey());
+        // Reset Http fake before fallback test
+        Http::swap(new \Illuminate\Http\Client\Factory());
 
         // 2. Setup wallet + debt in 2026-12 for planner context
         $walletId = $this->withHeader('Authorization', 'Bearer '.$token)
@@ -630,7 +636,7 @@ class FinanceRestApiTest extends TestCase
             'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent' => Http::response([
                 'candidates' => [[
                     'content' => [
-                        'parts' => [['text' => $aiPayload]],
+                        'parts' => [['thought' => true, 'text' => 'internal thought'], ['text' => $aiPayload]],
                     ],
                 ]],
             ], 200),
@@ -671,5 +677,77 @@ class FinanceRestApiTest extends TestCase
             ->assertJsonPath('monthlyPlans.0.monthlySalary', 8000000);
 
         $this->assertStringNotContainsString('fake_test_key_for_encryption_check', $boot->getContent());
+
+        // 6. User can clear their own API key
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/v1/ai-settings', [
+                'clearApiKey' => true,
+                'defaultModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk()
+            ->assertJsonPath('aiSettings.configured', false)
+            ->assertJsonPath('aiSettings.maskedKey', null);
+    }
+
+    public function test_gemini_alias_fallback_and_per_model_error_summary(): void
+    {
+        $token = $this->tokenFor('usr_fallback_test');
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/v1/ai-settings', [
+                'googleApiKey' => 'user_specific_gemini_key',
+                'defaultModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk();
+
+        $aiPayload = json_encode([
+            'summary' => 'Analisa berhasil lewat alias cadangan resmi Google.',
+            'healthStatus' => 'waspada',
+            'allocationRatio' => ['needsPct' => 60, 'wantsPct' => 15, 'savingsAndDebtPct' => 25],
+            'actionPlan' => ['Prioritaskan dana darurat.'],
+            'recommendedBudgets' => [
+                ['categoryId' => 'cat-food', 'categoryName' => 'Makanan & Minuman', 'recommendedLimit' => 1200000, 'reason' => 'Hemat'],
+            ],
+        ]);
+
+        // All 4 primary models return 503 high demand -> gemini-flash-lite-latest alias saves the request!
+        Http::fake([
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent' => Http::response(['error' => ['message' => 'This model is currently experiencing high demand.']], 503),
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent' => Http::response(['error' => ['message' => 'This model is currently experiencing high demand.']], 503),
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent' => Http::response(['error' => ['message' => 'This model is currently experiencing high demand.']], 503),
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent' => Http::response(['error' => ['message' => 'This model is currently experiencing high demand.']], 503),
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent' => Http::response([
+                'candidates' => [['content' => ['parts' => [['text' => $aiPayload]]]]],
+            ], 200),
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/monthly-plans/2026-11/analyze', [
+                'monthlySalary' => 6472000,
+                'preferredModel' => 'gemini-3.5-flash-lite',
+            ])
+            ->assertOk()
+            ->assertJsonPath('monthlyPlan.aiAnalysis.modelUsed', 'gemini-flash-lite-latest')
+            ->assertJsonPath('monthlyPlan.aiAnalysis.fallbackUsed', true);
+
+        // If every single model + alias returns 503, error message includes per-model details (never masks earlier failures)
+        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::fake([
+            'https://generativelanguage.googleapis.com/v1beta/models/*' => Http::response([
+                'error' => ['message' => 'This model is currently experiencing high demand.'],
+            ], 503),
+        ]);
+
+        $failRes = $this->withHeader('Authorization', 'Bearer '.$token)
+            ->postJson('/api/v1/monthly-plans/2026-11/analyze', [
+                'monthlySalary' => 6472000,
+                'preferredModel' => 'gemini-3.8-flash',
+            ])
+            ->assertStatus(422);
+
+        $msg = (string) $failRes->json('message');
+        $this->assertStringContainsString('gemini-3.8-flash', $msg);
+        $this->assertStringContainsString('gemini-3.5-flash-lite', $msg);
+        $this->assertStringContainsString('gemini-flash-lite-latest', $msg);
     }
 }
